@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ticket-hub</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">◧</div>
+      <div>
+        <div class="brand-name">ticket-hub</div>
+        <div class="brand-sub">context graph</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item active" data-view="board">
+        <span class="nav-icon">▦</span> Board
+      </button>
+      <button class="nav-item" data-view="graph">
+        <span class="nav-icon">⌬</span> Graph
+      </button>
+      <button class="nav-item" data-view="updates">
+        <span class="nav-icon">✦</span> Updates
+      </button>
+    </nav>
+    <div class="sidebar-foot">
+      <button class="btn btn-primary" id="new-ticket-btn">+ New ticket</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h1 id="view-title">Board</h1>
+      <div class="topbar-actions">
+        <input id="search" class="search" type="search" placeholder="Search tickets…" autocomplete="off">
+      </div>
+    </header>
+
+    <section id="view-board" class="view">
+      <div class="board" id="board-columns"></div>
+    </section>
+
+    <section id="view-graph" class="view hidden">
+      <div class="graph-wrap" id="graph-wrap">
+        <svg id="graph-svg"></svg>
+        <div class="graph-empty hidden" id="graph-empty">No tickets yet — create one to see the hierarchy.</div>
+      </div>
+    </section>
+
+    <section id="view-updates" class="view hidden">
+      <div class="updates-toolbar">
+        <label class="field"><span>Project</span>
+          <select id="updates-project"></select>
+        </label>
+        <button class="btn" id="copy-digest-btn">Copy</button>
+      </div>
+      <div id="updates-body" class="updates-body"></div>
+    </section>
+  </main>
+
+  <aside id="drawer" class="drawer hidden" aria-label="Ticket details">
+    <div class="drawer-header">
+      <div>
+        <div class="drawer-id" id="drawer-id"></div>
+        <h2 class="drawer-title" id="drawer-title"></h2>
+      </div>
+      <button class="icon-btn" id="drawer-close" title="Close">✕</button>
+    </div>
+    <div class="drawer-body" id="drawer-body"></div>
+  </aside>
+</div>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <h3>New ticket</h3>
+    <form id="new-ticket-form">
+      <label class="field"><span>Title</span><input name="title" required maxlength="200"></label>
+      <label class="field"><span>Body</span><textarea name="body" rows="3"></textarea></label>
+      <div class="field-row">
+        <label class="field"><span>Owner name</span><input name="owner" placeholder="hermes"></label>
+        <label class="field"><span>Family</span><input name="family" placeholder="hermes"></label>
+      </div>
+      <div class="field-row">
+        <label class="field"><span>Priority</span>
+          <select name="priority">
+            <option>low</option><option selected>medium</option><option>high</option><option>urgent</option>
+          </select>
+        </label>
+        <label class="field"><span>Parent (optional)</span><input name="parent" placeholder="TK-…"></label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="modal-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/ui/app.js"></script>
+</body>
+</html>
