@@ -33,7 +33,7 @@ def test_create_ticket(client):
     t = _create(client, "Parent ticket", owner={"name": "ray", "family": "ray",
                                                 "kind": "human"}, tags=["core"])
     assert t["id"].startswith("TK-")
-    assert t["status"] == "Draft"
+    assert t["status"] == "draft"
     fetched = client.get(f"/tickets/{t['id']}")
     assert fetched.status_code == 200
     assert fetched.json()["title"] == "Parent ticket"
@@ -58,7 +58,7 @@ def test_list_filters(client):
     a = _create(client, "Alpha thing", tags=["ui"],
                 owner={"name": "hermes-1", "family": "hermes"})
     b = _create(client, "Beta thing")
-    client.patch(f"/tickets/{a['id']}", json={"status": "Open"})
+    client.patch(f"/tickets/{a['id']}", json={"status": "open"})
     assert {t["id"] for t in client.get("/tickets?status=Open").json()} == {a["id"]}
     assert {t["id"] for t in client.get("/tickets?family=hermes").json()} == {a["id"]}
     assert {t["id"] for t in client.get("/tickets?tag=ui").json()} == {a["id"]}
@@ -73,13 +73,13 @@ def test_list_filters(client):
 def test_patch_status_emits_event(client):
     t = _create(client, "Patchable")
     resp = client.patch(f"/tickets/{t['id']}",
-                        json={"status": "Review", "actor": {"name": "glm"}})
+                        json={"status": "review", "actor": {"name": "glm"}})
     assert resp.status_code == 200
-    assert resp.json()["status"] == "Review"
+    assert resp.json()["status"] == "review"
     events = client.get(f"/tickets/{t['id']}/lineage").json()["events"]
     sc = [e for e in events if e["kind"] == "status_changed"]
     assert len(sc) == 1
-    assert sc[0]["payload"] == {"from": "Draft", "to": "Review"}
+    assert sc[0]["payload"] == {"from": "draft", "to": "review"}
 
 
 def test_patch_invalid_status_400(client):
@@ -146,7 +146,7 @@ def test_edge_missing_dst_404(client):
 def test_digest_structured_bullets_cite_event_ids(client):
     parent = _create(client, "Launch hub")
     child = _create(client, "Subtask", parent=parent["id"])
-    client.patch(f"/tickets/{child['id']}", json={"status": "Review",
+    client.patch(f"/tickets/{child['id']}", json={"status": "review",
                                                   "actor": {"name": "hermes"}})
     ev_art = client.post(f"/tickets/{child['id']}/events", json={
         "kind": "artifact", "actor": {"name": "forge"},
@@ -182,7 +182,7 @@ def test_digest_structured_bullets_cite_event_ids(client):
 def test_digest_from_child_scopes_to_project(client):
     parent = _create(client, "Project root")
     child = _create(client, "Child", parent=parent["id"])
-    client.patch(f"/tickets/{child['id']}", json={"status": "Running"})
+    client.patch(f"/tickets/{child['id']}", json={"status": "running"})
     digest = client.get(f"/tickets/{child['id']}/digest").json()
     assert digest["project"] == parent["id"]
     assert any("advanced to Running" == b["text"] for b in digest["bullets"])
@@ -190,7 +190,7 @@ def test_digest_from_child_scopes_to_project(client):
 
 def test_digest_markdown_format(client):
     t = _create(client, "MD project")
-    client.patch(f"/tickets/{t['id']}", json={"status": "Done"})
+    client.patch(f"/tickets/{t['id']}", json={"status": "done"})
     resp = client.get(f"/tickets/{t['id']}/digest?format=md")
     assert resp.status_code == 200
     assert "text/markdown" in resp.headers["content-type"]
@@ -208,12 +208,12 @@ def test_digest_bad_format_400(client):
 def test_board_columns(client):
     a = _create(client, "A")
     b = _create(client, "B")
-    client.patch(f"/tickets/{b['id']}", json={"status": "Open"})
+    client.patch(f"/tickets/{b['id']}", json={"status": "open"})
     board = client.get("/board").json()
-    assert set(board["columns"]) >= {"Draft", "Open", "Running", "Blocked",
-                                     "Review", "Done", "Cancelled"}
-    assert [t["id"] for t in board["columns"]["Draft"]] == [a["id"]]
-    assert [t["id"] for t in board["columns"]["Open"]] == [b["id"]]
+    assert set(board["columns"]) >= {"draft", "open", "running", "blocked",
+                                     "review", "done", "cancelled"}
+    assert [t["id"] for t in board["columns"]["draft"]] == [a["id"]]
+    assert [t["id"] for t in board["columns"]["open"]] == [b["id"]]
 
 
 # ---- thread binding / inbound --------------------------------------------------

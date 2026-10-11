@@ -127,10 +127,10 @@ body {
 .child-count { display: inline-flex; align-items: center; gap: 3px; }
 
 /* ---------- status colors ---------- */
-.st-Draft { --st: var(--st-draft); } .st-Open { --st: var(--st-open); }
-.st-Running { --st: var(--st-running); } .st-Blocked { --st: var(--st-blocked); }
-.st-Review { --st: var(--st-review); } .st-Done { --st: var(--st-done); }
-.st-Cancelled { --st: var(--st-cancelled); }
+.st-draft { --st: var(--st-draft); } .st-open { --st: var(--st-open); }
+.st-running { --st: var(--st-running); } .st-blocked { --st: var(--st-blocked); }
+.st-review { --st: var(--st-review); } .st-done { --st: var(--st-done); }
+.st-cancelled { --st: var(--st-cancelled); }
 .column-dot { background: var(--st); }
 .status-pill {
   display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 650;

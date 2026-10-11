@@ -12,7 +12,7 @@ from __future__ import annotations
 import itertools
 import datetime as _dt
 
-_STATUSES = ["Draft", "Open", "Running", "Blocked", "Review", "Done", "Cancelled"]
+_STATUSES = ["draft", "open", "running", "blocked", "review", "done", "cancelled"]
 
 
 def _now() -> str:
@@ -56,7 +56,7 @@ class FakeStore:
             "id": ticket_id,
             "title": title,
             "body": body,
-            "status": "Draft",
+            "status": "draft",
             "priority": priority,
             "owner": owner,
             "tags": list(tags or []),

@@ -2,7 +2,8 @@
 (() => {
   "use strict";
 
-  const STATUSES = ["Draft", "Open", "Running", "Blocked", "Review", "Done", "Cancelled"];
+  const STATUSES = ["draft", "open", "running", "blocked", "review", "done", "cancelled"];
+  const label = (s) => s ? s[0].toUpperCase() + s.slice(1) : s;
   const $ = (sel) => document.querySelector(sel);
   const el = (tag, cls, text) => {
     const n = document.createElement(tag);
@@ -100,7 +101,7 @@
     const card = el("div", "card");
     card.append(el("div", "card-title", t.title));
     const meta = el("div", "card-meta");
-    meta.append(el("span", `status-pill st-${t.status}`, t.status));
+    meta.append(el("span", `status-pill st-${t.status}`, label(t.status)));
     const owner = t.owner || {};
     if (owner.family && owner.family !== "unknown")
       meta.append(el("span", "chip chip-family", owner.family));

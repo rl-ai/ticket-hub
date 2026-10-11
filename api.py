@@ -23,7 +23,15 @@ from pydantic import BaseModel
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 UI_DIR = os.path.join(APP_DIR, "ui")
 
-STATUSES = ["Draft", "Open", "Running", "Blocked", "Review", "Done", "Cancelled"]
+STATUSES = [s.value for s in __import__("ticket_hub.model", fromlist=["Status"]).Status]
+
+
+def _canon_status(value: str) -> str:
+    """Case-insensitive status normalization to the canonical lowercase value."""
+    v = str(value).strip().lower()
+    if v not in STATUSES:
+        raise ValueError(f"Unknown status: {value}")
+    return v
 EDGE_TYPES = {"parent_of", "blocks", "relates_to", "duplicate_of"}
 # Types that must stay acyclic in the graph.
 CYCLE_EDGE_TYPES = {"parent_of", "blocks"}
@@ -80,7 +88,7 @@ def translate_digest(project: dict, events: list[dict]) -> list[dict]:
         if _is_known_issue(payload):
             text = "known issue logged"
         elif kind == "status_changed":
-            text = f"advanced to {payload.get('to', '?')}"
+            text = f"advanced to {str(payload.get('to', '?')).capitalize()}"
         elif kind == "artifact":
             name = payload.get("name") or payload.get("artifact") or "an artifact"
             text = f"produced {name}"
@@ -163,14 +171,21 @@ def create_app(store: Any = None) -> FastAPI:
     def get_store():
         if app.state.store is None:
             try:
+                import os
                 from ticket_hub.store import Store  # Lane A
+                from hub_gateway import StoreGateway
             except Exception as exc:  # pragma: no cover - depends on env
                 raise HTTPException(
                     status_code=503,
                     detail={"code": "store_unavailable",
                             "message": f"No store configured: {exc}"},
                 )
-            app.state.store = Store()
+            db_path = os.environ.get(
+                "TICKET_HUB_DB",
+                os.path.expanduser("~/tp-data/ticket-hub/hub.db"),
+            )
+            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+            app.state.store = StoreGateway(Store(db_path))
         return app.state.store
 
     def get_ticket_or_404(ticket_id: str) -> dict:
@@ -235,10 +250,8 @@ def create_app(store: Any = None) -> FastAPI:
     @app.get("/tickets")
     def list_tickets(status: Optional[str] = None, family: Optional[str] = None,
                      tag: Optional[str] = None, q: Optional[str] = None):
-        if status and status not in STATUSES:
-            raise HTTPException(status_code=400,
-                                detail={"code": "bad_request",
-                                        "message": f"Unknown status: {status}"})
+        if status:
+            status = _canon_status(status)
         tickets = get_store().list(status=status, family=family, tag=tag, q=q)
         return list(tickets)
 
@@ -248,10 +261,8 @@ def create_app(store: Any = None) -> FastAPI:
 
     @app.patch("/tickets/{ticket_id}")
     def patch_ticket(ticket_id: str, req: TicketPatch):
-        if req.status is not None and req.status not in STATUSES:
-            raise HTTPException(status_code=400,
-                                detail={"code": "bad_request",
-                                        "message": f"Unknown status: {req.status}"})
+        if req.status is not None:
+            req.status = _canon_status(req.status)
         fields = {k: v for k, v in
                   (("status", req.status), ("priority", req.priority),
                    ("title", req.title), ("body", req.body))
@@ -328,7 +339,7 @@ def create_app(store: Any = None) -> FastAPI:
         }
 
     @app.get("/tickets/{ticket_id}/digest")
-    def digest(ticket_id: str, format: str = "json"):
+    def digest(ticket_id: str, format: str = "json", full: bool = False):
         if format not in ("json", "md"):
             raise HTTPException(status_code=400,
                                 detail={"code": "bad_request",
@@ -343,12 +354,20 @@ def create_app(store: Any = None) -> FastAPI:
         for tid in ids:
             events.extend(store.timeline(tid))
         events.sort(key=lambda e: (e.get("ts") or "", e.get("id") or ""))
+        if full:
+            # Canonical lane-C translation layer (all event kinds, no
+            # fabrication, cites event ids).
+            from ticket_hub import translate as _translate
+            canon = _translate.template_pass(events=events, project=project)
+            bullets = canon.get("bullets", [])
+        else:
+            bullets = translate_digest(project, events)
         payload = {
             "project": project["id"],
             "project_title": project.get("title"),
             "ticket": ticket["id"],
             "updated_at": ticket.get("updated_at"),
-            "bullets": translate_digest(project, events),
+            "bullets": bullets,
         }
         if format == "md":
             return Response(digest_markdown(payload), media_type="text/markdown")
