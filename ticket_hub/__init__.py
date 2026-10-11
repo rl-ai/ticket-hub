@@ -27,6 +27,7 @@ from .model import (
 )
 from .store import Store
 from .lineage import descendant_tree, lineage, lineage_dict
+from . import translate
 
 __all__ = [
     "ACTOR_KINDS",
@@ -49,4 +50,5 @@ __all__ = [
     "descendant_tree",
     "lineage",
     "lineage_dict",
+    "translate",
 ]
