@@ -77,7 +77,7 @@ computed from child statuses), what's left (`remaining_items` +
 hub comment TK-01ABC… "shipped; dry-run clean on 2026-10-11" --actor hermes
 hub done TK-01ABC… --actor hermes   # running→review→done
 ```
-Review/approval is a human (or Ray-gated) decision — an agent moving a
+Review/approval is a human decision — blocked by Ray — an agent moving a
 ticket through `review → done` does not create acceptance authority;
 acceptance belongs to Ray.
 

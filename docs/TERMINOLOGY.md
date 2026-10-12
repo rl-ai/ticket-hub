@@ -3,14 +3,14 @@
 Shared vocabulary for ticket-hub and the operation around it. Use these
 terms verbatim in tickets, docs, and reports.
 
-## Ray-gated
+## Promotion
 
-Requiring Ray's explicit decision before it may proceed — acceptance of a
-candidate, a promotion to `main`, a production action, a credential grant.
-Nothing else (green tests, reviewer approval, agent consensus) counts as
-that decision. In the hub a Ray-gated item carries a
-`{"marker": "RAY-GATED"}` event (see the migrate script and `/plan`), so
-the gate is queryable, not folklore.
+Advancing a build or ticket into `main` / prod. Only Ray can do it —
+nothing else (green tests, reviewer approval, agent consensus) counts.
+Promotion is therefore always **blocked by Ray** until Ray explicitly
+accepts. In the hub such items carry a `{"marker": "RAY-GATED"}` event —
+that exact string is a legacy DB field value that cannot be renamed
+(append-only events) — so promotion state stays queryable, not folklore.
 
 ## Blocked by Ray
 
@@ -39,7 +39,7 @@ green before the candidate ships.
 ## Cycle
 
 One iteration of the forge build loop: pick work → build in lanes → test
-board → review → promotion candidate → (Ray-gated) accept/reject → next
+board → review → promotion candidate → blocked by Ray: accept/reject → next
 cycle. A rejection starts the successor cycle from the same frozen
 snapshot plus rejection evidence; it never patches reviewed bytes.
 

@@ -17,13 +17,13 @@ A working v1 means ALL of:
    parent-child hierarchy (cycle-free, single parent), blocks / relates_to /
    duplicate_of edges; append-only immutable history (DB-trigger enforced);
    SQLite WAL, one writer.  [DONE v0]
-2. **HTTP API** — full CRUD + projections (lineage, board, digest) with a
-   stable JSON contract and JSON error envelope.  [DONE v0]
+2. **HTTP API** — full CRUD + projections (lineage, board, digest, plan) with
+   a stable JSON contract and JSON error envelope.  [DONE v0; plan added in v1]
 3. **Human UI** — build-step-free SPA: Board (status columns), Graph
    (collapsible hierarchy), Ticket drawer (timeline + lineage breadcrumb +
    bound threads), Updates (digest view with event-id citations).  [DONE v0]
 4. **Terminal/agent surface** — `hub` CLI + stdlib `HubClient`: every verb
-   (new/get/ls/set/comment/event/link/lineage/digest/board/bind/done/start),
+   (new/get/ls/set/comment/event/link/lineage/plan/digest/board/bind/done/start),
    `--json` for machines, exit codes for scripts, so ANY agent family drives
    the same hub with zero deps.  [v1 lane CLI]
 5. **Chat compatibility** — one ticket = thread root, child ticket =
@@ -44,10 +44,12 @@ A working v1 means ALL of:
    (127.0.0.1): agents reach it via their own host tools; actors carry
    `family` chips; every mutation is attributed. Network auth is deferred
    until a non-loopback consumer exists (then bearer-per-actor, not shared).
-8. **Durability & operations** — persisted launchd-style lifecycle for API +
-   outbound daemon; SQLite file backed up in normal tp-data rotation;
-   migration from the legacy flat ledger done idempotently with full history.
-   [migration DONE; launchd templates in v1 lanes]
+8. **Durability & operations** — persisted launchd-style lifecycle for API,
+   outbound daemon, and a daily maintenance job (backup + quick hygiene +
+   prune); SQLite file backed up via `scripts/backup.sh` (sqlite3 `.backup`,
+   WAL-safe, keep 14) in normal tp-data rotation; migration from the legacy
+   flat ledger done idempotently with full history.
+   [migration DONE; launchd templates + installers in deploy/]
 9. **Adopted as the work OS** — forge cycles and orchestrator file tickets
    against the hub API (not the flat ledger); hub.db is the go-forward
    ledger; `~/tp-data/tickets/tickets.db` frozen as source-of-history.
@@ -81,18 +83,24 @@ forge/orchestrator ── HTTP ────────────────�
   anchoring. Child tickets reply under the parent binding's root.
 - **Digest honesty**: template pass only cites ids present in input; polish
   can rewrite prose but never add citations; violations fall back whole.
+- **Blocked by Ray** (named concept): any item awaiting Ray's approval —
+  a descendant with status `blocked` and/or a timeline event carrying payload
+  marker `RAY-GATED`. The `GET /tickets/{id}/plan` projection surfaces them as
+  `blocked_by_ray` (and `hub plan` prints a BLOCKED BY RAY section), so
+  approval-waiting items are findable without hunting statuses by hand.
 
 ## Acceptance checklist (v1 → "working version")
 
 - [x] Server live on :8777; UI serves; demo + migrated real history visible
-- [x] 90 tests green (core 23, api 19, translate 24, adapters 24)
+- [x] 134 tests green (core 23, api 20, translate 23, adapters 25, cli 16,
+      client 12, outbound 15)
 - [x] Real-store e2e: hierarchy, cycle rejection (both paths), lifecycle
       enforcement, thread inbound → lineage merge, digest both modes
 - [x] Legacy ledger migration applied (37 tickets / 33 edges / 236 events,
-      ts+actor+ray-gated preserved, idempotent, verified through live API)
-- [x] CLI lane: 13 verbs + exit codes + `--json`; live-server smoke green (new/start/comment/digest/done; bad status -> exit 1)
+      ts+actor+RAY-GATED marker preserved, idempotent, verified through live API)
+- [x] CLI lane: 14 verbs + exit codes + `--json`; live-server smoke green (new/start/comment/digest/done; bad status -> exit 1)
 - [x] OUTBOUND lane: watermark posting + event-id dedupe verified live (tick1 posts, tick2 silent), inert-safe, launchd template + installer (prints load command; never loads itself)
-- [x] Integration: board 133 passed (core+api+adapters+cli+outbound); CLI + outbound e2e against the live server
+- [x] Integration: board 134 passed (core+api+adapters+cli+outbound+client); CLI + outbound e2e against the live server
 - [ ] Ray acceptance
 
 ## Operational runbook
@@ -100,10 +108,15 @@ forge/orchestrator ── HTTP ────────────────�
 - Server (persisted): `cd ~/tp-data/forge/sandbox/hub-integ && python api.py`
   → `:8777`, DB `~/tp-data/ticket-hub/hub.db`.
 - CLI: `hub ls --status running`, `hub new "Title" --owner ray --tag forge`,
-  `hub digest <ID> --md`, `hub link A B parent_of`.
+  `hub digest <ID> --md`, `hub link A B parent_of`,
+  `hub plan <ID>` (progress + Blocked-by-Ray items + remaining).
 - Outbound: `python outbound.py --once` (dry loop), installer prints the
   launchctl command — service control stays Ray's.
+- Maintenance: `deploy/install_maintenance.sh` renders the daily launchd job
+  (`scripts/com.ticket-hub.maintenance.sh`: backup.sh snapshot +
+  hygiene_check.sh --quick + retention, keep 14); `scripts/healthcheck.sh`
+  gives a one-line ok/FAIL against `GET /board`.
 - Adapters config: `~/tp-data/ticket-hub/adapters.json`, per-platform
   sections; absent section ⇒ inert. Never commit tokens.
 - Promotion path: hub work lives on branch `hub` (pushed to Morpheus
-  origin); merges into `main` are Ray-gated like forge cycles.
+  origin); merges into `main` are blocked by Ray, like forge cycles.

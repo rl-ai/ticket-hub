@@ -92,9 +92,9 @@ One ticket = one chat thread root. `hub bind <ID> matrix <room> --thread
 | [docs/CLI.md](docs/CLI.md) | Every `hub` verb, flags, `--json`, exit codes |
 | [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) | How an agent works a ticket end-to-end |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | Server runbook, outbound install, backup/restore |
-| [docs/TERMINOLOGY.md](docs/TERMINOLOGY.md) | Ray-gated, seat, lane, cycle, digest, binding, Blocked by Ray |
+| [docs/TERMINOLOGY.md](docs/TERMINOLOGY.md) | promotion, seat, lane, cycle, digest, binding, Blocked by Ray |
 | [DESIGN-v1.md](DESIGN-v1.md) | v1 definition, architecture, acceptance checklist |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Branch/commit/review process, Ray-gated promotion |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Branch/commit/review process, promotion blocked by Ray |
 | [SECURITY.md](SECURITY.md) | Security posture and report scope |
 
 ## Non-goals (v1)

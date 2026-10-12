@@ -48,7 +48,7 @@ def _cmd_new(hub: HubClient, args) -> int:
     t = hub.create_ticket(args.title, body=args.body or "",
                           parent=args.parent, owner=args.owner,
                           tags=args.tag or None, priority=args.priority)
-    print(ticket_line(t))
+    print(_dump(t) if getattr(args, "json", False) else ticket_line(t))
     return 0
 
 
@@ -260,6 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--owner", default=None)
     sp.add_argument("--tag", action="append", default=[])
     sp.add_argument("--priority", default=None)
+    sp.add_argument("--json", action="store_true", help="print created ticket as raw JSON")
     sp.set_defaults(func=_cmd_new)
 
     sp = sub.add_parser("get", help="show one ticket")

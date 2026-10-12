@@ -10,7 +10,7 @@ production or merge authority.
   `hub-TK01ABC-deflate-digest`).
 - Branch from the integration branch (`hub`); keep branches short-lived and
   rebase rather than merge when they drift.
-- Never push to `main`. Merges into `main` are Ray-gated.
+- Never push to `main`. Merges into `main` are blocked by Ray until Ray accepts.
 
 ## Commits
 
@@ -52,7 +52,7 @@ updated **before** the code:
 If code and DESIGN disagree, that is a defect in one of them — file it;
 don't silently pick a side.
 
-## Ray-gated promotion
+## promotion blocked by Ray
 
 - `hub` branch: integration of reviewed lane work.
 - `main`: only by Ray, from an exact reviewed candidate (frozen commit).
