@@ -1,0 +1,7 @@
+#!/bin/sh
+# hub — PATH shim: runs the repo's hub_cli.py with the forge venv python.
+# Resolve the repo dir from this script's location so the shim is relocatable.
+HUB_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+PY=/Users/raycanivel/tp-data/forge/sandbox/forge-venv/bin/python
+[ -x "$PY" ] || PY=python3
+exec "$PY" "$HUB_DIR/hub_cli.py" "$@"
