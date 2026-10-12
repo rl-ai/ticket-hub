@@ -664,6 +664,50 @@ def create_app(store: Any = None) -> FastAPI:
         return get_store().put_page(
             slug, title=req.title, body_md=req.body_md,
             tags=list(req.tags), actor=req.actor)
+    # ---- Roles (v2 pillar 3) ----------------------------------------------
+
+    def _load_registry() -> dict:
+        """Read roles/registry.json fresh at request time (edit = no restart)."""
+        path = os.path.join(APP_DIR, "roles", "registry.json")
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "not_found",
+                        "message": "roles/registry.json not found"},
+            )
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "roles_unavailable",
+                        "message": f"role registry unreadable: {exc}"},
+            )
+        if not isinstance(data, dict) or not isinstance(
+                data.get("roles"), list):
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "roles_unavailable",
+                        "message": "role registry must be an object "
+                                   "with a 'roles' list"},
+            )
+        return data
+
+    @app.get("/roles")
+    def list_roles():
+        return _load_registry()
+
+    @app.get("/roles/{role_id}")
+    def get_role(role_id: str):
+        for role in _load_registry()["roles"]:
+            if isinstance(role, dict) and role.get("id") == role_id:
+                return role
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "not_found",
+                    "message": f"Role {role_id} not found"},
+        )
 
     # ---- UI ----------------------------------------------------------------
 
