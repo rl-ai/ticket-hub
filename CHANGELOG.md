@@ -7,6 +7,15 @@ per-commit record).
 
 ## [Unreleased]
 
+### Added (v2 Mission Control — awaiting Ray acceptance)
+- Wiki: append-only pages (revisions like events), `/wiki*` API, `hub wiki` CLI, `[[WikiLink]]` renderer, seed corpus (repo docs + ops knowledge; re-import freshness; machine actor `seed-import`).
+- Mission Control UI: Board | Graph | Wiki | Monitoring | Admin | Roles.
+- `GET /admin/status` read-only aggregate (health, services, backups, maintenance, hygiene, counts); hygiene/maintenance emit machine status files.
+- Roles registry (7 charters) served at `/roles`; `hub packet` renders the ticket-as-shared-packet.
+- `swarm.py`: deterministic harness — CAS claims (claim-then-confirm over append-only log), locked-DB bounded retry, watermark dedupe, INERT without config.
+- GLM build review: PASS (no blockers; 4 advisories logged to root ticket, 2 deferred to v2.1).
+
+
 ### Accepted
 - v1 accepted by Ray 2026-10-12 — hub becomes the go-forward work OS (GLM review PASS-CONDITIONAL, all blockers closed).
 
