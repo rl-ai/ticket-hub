@@ -90,11 +90,9 @@ forge/orchestrator ── HTTP ────────────────�
       enforcement, thread inbound → lineage merge, digest both modes
 - [x] Legacy ledger migration applied (37 tickets / 33 edges / 236 events,
       ts+actor+ray-gated preserved, idempotent, verified through live API)
-- [ ] CLI lane: verbs + exit codes + `--json`; full repo board green
-- [ ] OUTBOUND lane: watermark posting, inert-safe, launchd template; full
-      repo board green
-- [ ] Integration merge + final e2e (CLI drives live server; outbound tick
-      posts to FakeAdapter end-to-end)
+- [x] CLI lane: 13 verbs + exit codes + `--json`; live-server smoke green (new/start/comment/digest/done; bad status -> exit 1)
+- [x] OUTBOUND lane: watermark posting + event-id dedupe verified live (tick1 posts, tick2 silent), inert-safe, launchd template + installer (prints load command; never loads itself)
+- [x] Integration: board 133 passed (core+api+adapters+cli+outbound); CLI + outbound e2e against the live server
 - [ ] Ray acceptance
 
 ## Operational runbook

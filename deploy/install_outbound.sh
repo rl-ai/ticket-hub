@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the ticket-hub outbound daemon as a user launchd service.
 #
-# Renders deploy/com.tickehub.outbound.plist.template into
+# Renders deploy/com.ticket-hub.outbound.plist.template into
 #   ~/Library/LaunchAgents/com.ticket-hub.outbound.plist
 # (python path, repo paths, interval) and prints the EXACT launchctl command
 # for Ray to run. This script never loads the service itself — service
@@ -10,7 +10,7 @@ set -euo pipefail
 
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${DEPLOY_DIR}/.." && pwd)"
-TEMPLATE="${DEPLOY_DIR}/com.tickehub.outbound.plist.template"
+TEMPLATE="${DEPLOY_DIR}/com.ticket-hub.outbound.plist.template"
 TARGET="${HOME}/Library/LaunchAgents/com.ticket-hub.outbound.plist"
 
 PYTHON="${TICKET_HUB_PYTHON:-${REPO_DIR}/../forge-venv/bin/python}"
