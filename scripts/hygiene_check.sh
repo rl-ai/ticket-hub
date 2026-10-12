@@ -118,6 +118,12 @@ else
 fi
 
 # ---- verdict ---------------------------------------------------------------
+# Machine-readable summary for GET /admin/status (Mission Control).
+HS="${TICKET_HUB_HYGIENE_STATUS:-$HOME/tp-data/ticket-hub/hygiene-status.json}"
+mkdir -p "$(dirname "${HS}")" 2>/dev/null || true
+printf '%s' "{\"result\": \"$( [ "${FAILURES}" -eq 0 ] && echo PASS || echo FAIL )\", \"ts\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"failures\": ${FAILURES}}" \
+    > "${HS}.tmp" 2>/dev/null && mv "${HS}.tmp" "${HS}" 2>/dev/null || true
+
 if [ "${FAILURES}" -eq 0 ]; then
     echo "HYGIENE: PASS"
     exit 0

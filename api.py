@@ -405,6 +405,92 @@ def create_app(store: Any = None) -> FastAPI:
             return {"ok": True, "ts": None, "last_error": None,
                     "note": "no healthcheck has run yet"}
 
+    def _read_json_file(path: str) -> dict | None:
+        try:
+            with open(os.path.expanduser(path), encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+
+    @app.get("/admin/status")
+    def admin_status():
+        """Mission Control aggregate. Read-only: local files + launchctl
+        list (display-only; actions stay blocked by Ray)."""
+        hub_dir = os.environ.get(
+            "TICKET_HUB_DIR", os.path.expanduser("~/tp-data/ticket-hub"))
+        store = get_store()
+
+        counts = {}
+        try:
+            conn = getattr(store, "_store", store)
+            raw = getattr(conn, "_conn", None)
+            if raw is not None:
+                for table, key in (("tickets", "tickets"), ("edges", "edges"),
+                                   ("events", "events"),
+                                   ("wiki_pages", "wiki_pages")):
+                    try:
+                        counts[key] = raw.execute(
+                            f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    except Exception:
+                        counts[key] = None
+        except Exception:
+            pass
+
+        services = []
+        try:
+            import subprocess
+            out = subprocess.run(
+                ["launchctl", "list"], capture_output=True, text=True,
+                timeout=5).stdout
+            for line in out.splitlines():
+                cols = line.split("\t")
+                if len(cols) >= 3 and cols[2].startswith("com.ticket-hub."):
+                    pid, status, label = cols[0], cols[1], cols[2]
+                    services.append({
+                        "label": label,
+                        "loaded": True,
+                        "pid": None if pid in ("-", "") else int(pid),
+                        "state": ("running" if pid not in ("-", "")
+                                  else "loaded (not running)")})
+        except Exception:
+            pass
+
+        backups = {"newest": None, "age_h": None, "count": 0}
+        try:
+            bdir = os.path.join(hub_dir, "backups")
+            snaps = sorted(
+                (f for f in os.listdir(bdir) if f.endswith(".db")),
+                key=lambda f: os.path.getmtime(os.path.join(bdir, f)),
+                reverse=True)
+            if snaps:
+                import time
+                backups = {"newest": snaps[0],
+                           "age_h": round(
+                               (time.time() - os.path.getmtime(
+                                   os.path.join(bdir, snaps[0]))) / 3600, 1),
+                           "count": len(snaps)}
+        except OSError:
+            pass
+
+        return {
+            "health": _read_json_file(
+                os.path.join(hub_dir, "health-status.json"))
+            or {"ok": None, "ts": None, "tickets": None,
+                "last_error": "no healthcheck has run"},
+            "services": services,
+            "backups": backups,
+            "maintenance": _read_json_file(
+                os.path.join(hub_dir, "maintenance-status.json"))
+            or {"last_run": None, "summary": "not run yet"},
+            "hygiene": _read_json_file(
+                os.path.join(hub_dir, "hygiene-status.json"))
+            or {"result": "unknown", "ts": None},
+            "counts": counts,
+            "db_path": hub_dir + "/hub.db",
+            "seats_note": "seat health: run remote-model-health (morpheus); "
+                          "not polled from the hub by design (loopback scope)",
+        }
+
     @app.get("/tickets/{ticket_id}/plan")
     def plan(ticket_id: str):
         """Introspection view: what this ticket is about, progress, and

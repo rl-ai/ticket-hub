@@ -302,3 +302,21 @@ def test_plan_endpoint(client):
     assert plan["progress"]["done"] == 1
     assert {i["id"] for i in plan["remaining_items"]} == {b["id"], c["id"]}
     assert {i["id"] for i in plan["blocked_by_ray"]} == {c["id"]}
+
+
+def test_admin_status_aggregate(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("TICKET_HUB_DIR", str(tmp_path))
+    (tmp_path / "health-status.json").write_text(
+        '{"ok": true, "ts": "t", "tickets": 3}')
+    bdir = tmp_path / "backups"
+    bdir.mkdir()
+    (bdir / "hub-20261012T030000Z.db").write_text("x")
+    resp = client.get("/admin/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["health"]["ok"] is True
+    assert body["backups"]["count"] == 1
+    assert body["backups"]["newest"].endswith(".db")
+    assert body["maintenance"]["last_run"] is None
+    assert isinstance(body["services"], list)
+    assert body["db_path"].endswith("hub.db")
