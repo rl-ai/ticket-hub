@@ -106,6 +106,47 @@ def _cmd_link(hub: HubClient, args) -> int:
     return 0
 
 
+def _cmd_plan(hub: HubClient, args) -> int:
+    plan = hub.plan(args.id)
+    if args.json:
+        print(_dump(plan))
+        return 0
+    t = plan["ticket"]
+    p = plan["progress"]
+    print(f"{t['id']}  [{t['status']}]  {t['title']}")
+    if plan.get("summary"):
+        print()
+        for line in plan["summary"].splitlines()[:6]:
+            print(f"  {line}")
+    print()
+    bar_w = 30
+    filled = int(bar_w * p["percent"] / 100)
+    print(f"  progress  [{'#' * filled}{'.' * (bar_w - filled)}] "
+          f"{p['percent']}%  ({p['done']}/{p['total']} done)")
+    if plan["blocked_by_ray"]:
+        print(f"\n  BLOCKED BY RAY ({len(plan['blocked_by_ray'])}):")
+        for b in plan["blocked_by_ray"][:10]:
+            print(f"    ! {b['id']}  [{b['status']}]  {b['title']}")
+    if plan["remaining_items"]:
+        print(f"\n  REMAINING ({len(plan['remaining_items'])}):")
+        for r in plan["remaining_items"][:12]:
+            owner = f"  [{r['owner']}]" if r.get("owner") else ""
+            print(f"    - {r['id']}  [{r['status']}]  {r['title']}{owner}")
+        if len(plan["remaining_items"]) > 12:
+            print(f"    … {len(plan['remaining_items']) - 12} more")
+    if plan["remaining_notes"]:
+        print("\n  REMAINING (noted in plan):")
+        for item in plan["remaining_notes"][:8]:
+            print(f"    · {item}")
+    act = plan.get("recent_activity") or []
+    if act:
+        print("\n  RECENT:")
+        for e in act[-5:]:
+            actor = (e.get("actor") or {}).get("name", "?")
+            print(f"    {e.get('ts', '')[:19]}  {actor}: {e.get('kind')}")
+    return 0
+
+
 def _cmd_lineage(hub: HubClient, args) -> int:
     lin = hub.lineage(args.id)
     if args.json:
@@ -267,6 +308,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("id")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=_cmd_lineage)
+
+    sp = sub.add_parser("plan",
+                        help="what this ticket is about, progress, what remains")
+    sp.add_argument("id")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=_cmd_plan)
 
     sp = sub.add_parser("digest", help="translated project digest")
     sp.add_argument("id")

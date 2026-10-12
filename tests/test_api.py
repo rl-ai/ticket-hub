@@ -269,3 +269,24 @@ def test_validation_error_is_json(client):
     resp = client.post("/tickets", json={"body": "no title"})
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "validation"
+
+def test_plan_endpoint(client):
+    root = client.post("/tickets", json={"title": "Root"}).json()
+    a = client.post("/tickets", json={"title": "Child done"}).json()
+    b = client.post("/tickets", json={"title": "Child open"}).json()
+    c = client.post("/tickets", json={"title": "Blocked one"}).json()
+    for kid in (a, b, c):
+        r = client.post(f"/tickets/{root['id']}/edges",
+                        json={"dst": kid["id"], "type": "parent_of"})
+        assert r.status_code == 201, r.text
+    for s in ("open", "running", "review", "done"):
+        client.patch(f"/tickets/{a['id']}", json={"status": s})
+    client.patch(f"/tickets/{c['id']}", json={"status": "open"})
+    client.patch(f"/tickets/{c['id']}", json={"status": "blocked"})
+    r = client.get(f"/tickets/{root['id']}/plan")
+    assert r.status_code == 200
+    plan = r.json()
+    assert plan["progress"]["total"] == 3
+    assert plan["progress"]["done"] == 1
+    assert {i["id"] for i in plan["remaining_items"]} == {b["id"], c["id"]}
+    assert {i["id"] for i in plan["blocked_by_ray"]} == {c["id"]}

@@ -383,6 +383,58 @@ def create_app(store: Any = None) -> FastAPI:
                 child_counts[t["id"]] = len(list(store.children(t["id"])))
         return {"columns": columns, "child_counts": child_counts}
 
+    @app.get("/tickets/{ticket_id}/plan")
+    def plan(ticket_id: str):
+        """Introspection view: what this ticket is about, progress, and
+        what remains. Progress = descendant work items done vs open;
+        remaining = unfinished children + latest 'remaining items' checkpoint
+        (checkpoint events may carry payload.remaining: [..]); blocked_by_ray
+        = open items flagged blocked/RAY-GATED (marker event or blocked
+        status)."""
+        store = get_store()
+        ticket = get_ticket_or_404(ticket_id)
+        descendants = list(store.descendants(ticket_id))
+
+        def flag_blocked(t) -> bool:
+            if t["status"] == "blocked":
+                return True
+            return any(
+                (e.get("payload") or {}).get("marker") == "RAY-GATED"
+                for e in store.timeline(t["id"]))
+
+        done = [t for t in descendants if t["status"] == "done"]
+        cancelled = [t for t in descendants if t["status"] == "cancelled"]
+        open_items = [t for t in descendants
+                      if t["status"] not in ("done", "cancelled")]
+        blocked = [t for t in descendants if flag_blocked(t)]
+        # latest checkpoint listing remaining items (hand-authored plans)
+        remaining_notes: list[dict] = []
+        for tid in {ticket_id} | {t["id"] for t in descendants}:
+            for ev in store.timeline(tid):
+                rem = (ev.get("payload") or {}).get("remaining")
+                if isinstance(rem, list) and rem:
+                    remaining_notes.append(
+                        {"ticket_id": tid, "ts": ev.get("ts", ""),
+                         "items": [str(x) for x in rem]})
+        remaining_notes.sort(key=lambda n: n["ts"])
+        total_work = len(descendants) - len(cancelled)
+        pct = int(100 * len(done) / total_work) if total_work else (
+            100 if ticket["status"] == "done" else 0)
+        brief = {"ticket": ticket,
+                 "summary": (ticket.get("body") or "").strip(),
+                 "progress": {"done": len(done), "open": len(open_items),
+                              "total": total_work, "percent": pct},
+                 "remaining_items": [
+                     {"id": t["id"], "title": t["title"], "status": t["status"],
+                      "owner": (t.get("owner") or {}).get("name")}
+                     for t in open_items],
+                 "remaining_notes": remaining_notes[-1]["items"] if remaining_notes else [],
+                 "blocked_by_ray": [
+                     {"id": t["id"], "title": t["title"], "status": t["status"]}
+                     for t in blocked],
+                 "recent_activity": list(store.timeline(ticket_id))[-8:]}
+        return brief
+
     # ---- Threads / chat bridges ------------------------------------------
 
     @app.post("/tickets/{ticket_id}/bind", status_code=201)

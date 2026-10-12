@@ -239,13 +239,14 @@
     $("#drawer-body").textContent = "";
     $("#drawer-id").textContent = id;
     $("#drawer-title").textContent = "…";
-    let ticket, lin, bindings;
+    let ticket, lin, bindings, plan;
     try {
       [ticket, lin] = await Promise.all([
         api(`/tickets/${id}`),
         api(`/tickets/${id}/lineage`),
       ]);
       try { bindings = await api(`/tickets/${id}/bindings`); } catch { bindings = []; }
+      try { plan = await api(`/tickets/${id}/plan`); } catch { plan = null; }
     } catch (err) {
       $("#drawer-body").append(el("p", "muted", "Failed to load: " + err.message));
       return;
@@ -289,6 +290,61 @@
       sec2.append(art);
     }
     body.append(sec2);
+
+    // plan: progress, blocked by Ray, remaining
+    if (plan) {
+      const secP = el("div", "drawer-section");
+      secP.append(el("h3", null, "Plan"));
+      const p = plan.progress || {};
+      const bar = el("div", "plan-bar");
+      const fill = el("div", "plan-bar-fill");
+      fill.style.width = (p.percent || 0) + "%";
+      bar.append(fill);
+      secP.append(bar);
+      secP.append(el("div", "plan-pct",
+        `${p.percent || 0}% — ${p.done || 0}/${p.total || 0} work items done`));
+      if (plan.summary) {
+        const sum = el("p", "plan-summary");
+        sum.textContent = plan.summary;
+        secP.append(sum);
+      }
+      if ((plan.blocked_by_ray || []).length) {
+        const bl = el("div", "plan-blocked");
+        bl.append(el("h4", null, `Blocked by Ray (${plan.blocked_by_ray.length})`));
+        for (const b of plan.blocked_by_ray.slice(0, 10)) {
+          const row = el("div", "plan-item");
+          const link = el("a", null, b.title);
+          link.addEventListener("click", () => openDrawer(b.id));
+          row.append(el("span", "plan-bang", "!"), link,
+                     el("span", "muted", " " + b.status));
+          bl.append(row);
+        }
+        secP.append(bl);
+      }
+      const rem = plan.remaining_items || [];
+      if (rem.length) {
+        const rm = el("div");
+        rm.append(el("h4", null, `Remaining (${rem.length})`));
+        for (const r of rem.slice(0, 15)) {
+          const row = el("div", "plan-item");
+          const link = el("a", null, r.title);
+          link.addEventListener("click", () => openDrawer(r.id));
+          row.append(el("span", `status-pill st-${r.status}`, r.status), link,
+                     r.owner ? el("span", "muted", " · " + r.owner) : el("span"));
+          rm.append(row);
+        }
+        if (rem.length > 15) rm.append(el("div", "muted", `… ${rem.length - 15} more`));
+        secP.append(rm);
+      }
+      if ((plan.remaining_notes || []).length) {
+        const rn = el("div");
+        rn.append(el("h4", null, "Remaining (noted in plan)"));
+        for (const item of plan.remaining_notes.slice(0, 8))
+          rn.append(el("div", "plan-item", "· " + item));
+        secP.append(rn);
+      }
+      body.append(secP);
+    }
 
     // bound threads
     const sec3 = el("div", "drawer-section");

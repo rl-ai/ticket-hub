@@ -167,6 +167,10 @@ class HubClient:
     def board(self) -> dict:
         return self._request("GET", "/board")
 
+    def plan(self, ticket_id: str) -> dict:
+        return self._request("GET",
+                             f"/tickets/{urllib.parse.quote(ticket_id)}/plan")
+
     # -- threads / chat bridges -----------------------------------------------
 
     def bind(self, ticket_id: str, platform: str, room_id: str,
