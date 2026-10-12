@@ -11,6 +11,7 @@ Run:
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Optional
 
@@ -383,6 +384,20 @@ def create_app(store: Any = None) -> FastAPI:
                 child_counts[t["id"]] = len(list(store.children(t["id"])))
         return {"columns": columns, "child_counts": child_counts}
 
+    @app.get("/health")
+    def health():
+        """Last-known health written by scripts/healthcheck.sh (monitor
+        surface per GLM review: a FAIL must be visible between checks)."""
+        path = os.environ.get(
+            "TICKET_HUB_HEALTH_STATUS",
+            os.path.expanduser("~/tp-data/ticket-hub/health-status.json"))
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return {"ok": True, "ts": None, "last_error": None,
+                    "note": "no healthcheck has run yet"}
+
     @app.get("/tickets/{ticket_id}/plan")
     def plan(ticket_id: str):
         """Introspection view: what this ticket is about, progress, and
@@ -396,6 +411,10 @@ def create_app(store: Any = None) -> FastAPI:
         descendants = list(store.descendants(ticket_id))
 
         def flag_blocked(t) -> bool:
+            # Current state only: completed/cancelled items drop off even if
+            # they carry historical RAY-GATED marker events (GLM review).
+            if t["status"] in ("done", "cancelled"):
+                return False
             if t["status"] == "blocked":
                 return True
             return any(
