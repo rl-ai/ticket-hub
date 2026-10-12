@@ -546,7 +546,7 @@ class Store:
         ``thread_message`` events from any ticket sharing one of its thread
         bindings (same platform + room + thread). Each entry is an event dict
         plus ``source_ticket``; ordered by (ts, seq)."""
-        t = self._require_ticket(ticket_id)
+        self._require_ticket(ticket_id)  # validation side effect only
         own = [
             {**ev.to_dict(), "source_ticket": ticket_id} for ev in self.events(ticket_id)
         ]

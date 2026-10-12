@@ -15,7 +15,6 @@ from ticket_hub.adapters import (
     MatrixAdapter,
     SlackAdapter,
 )
-from ticket_hub.translate import template_pass
 
 PLATFORMS = [MatrixAdapter, DiscordAdapter, SlackAdapter]
 

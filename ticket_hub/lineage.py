@@ -5,7 +5,6 @@ ancestry chain + descendant tree + full ordered event chain for a ticket.
 """
 from __future__ import annotations
 
-from .model import Event, Ticket
 from .store import Store
 
 

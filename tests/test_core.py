@@ -7,7 +7,6 @@ import pytest
 from ticket_hub import (
     ALLOWED_TRANSITIONS,
     Actor,
-    Event,
     Status,
     Store,
     assert_transition,
@@ -166,7 +165,7 @@ def test_no_event_mutation_api(store):
 
 
 def test_db_triggers_block_event_update_delete(store):
-    t = store.create_ticket("w", owner=RAY)
+    store.create_ticket("w", owner=RAY)
     raw = sqlite3.connect(store.db_path)
     with pytest.raises(sqlite3.IntegrityError):
         raw.execute("UPDATE events SET payload = '{}'")

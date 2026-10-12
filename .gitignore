@@ -2,3 +2,17 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+
+# local environments & OS noise
+.venv/
+venv/
+env/
+.DS_Store
+
+# logs & runtime database files (the hub DB lives outside the repo at
+# ~/tp-data/ticket-hub/hub.db; any local copy must never be committed)
+*.log
+hub.db*
+
+# tooling caches
+.ruff_cache/

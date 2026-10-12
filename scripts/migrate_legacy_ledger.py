@@ -139,7 +139,7 @@ def main():
         except sqlite3.IntegrityError:
             pass  # single-parent rule: skip conflicting second parent
     # -- events ------------------------------------------------------------
-    n_e = n_skip = 0
+    n_e = 0
     last_status = {row["id"]: row["status"] for row in hub.execute("SELECT id, status FROM tickets")}
     for r in leg.execute("SELECT * FROM ticket_events ORDER BY ticket_id, ts, seq"):
         lid = r["ticket_id"]

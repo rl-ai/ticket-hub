@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from ticket_hub.model import Actor, Status, coerce_status
+from ticket_hub.model import Actor, coerce_status
 from ticket_hub.store import Store
 
 
