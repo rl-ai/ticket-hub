@@ -179,6 +179,61 @@ def _cmd_digest(hub: HubClient, args) -> int:
     return 0
 
 
+def _cmd_packet(hub: HubClient, args) -> int:
+    pkt = hub.packet(args.id)
+    if args.json:
+        print(_dump(pkt))
+        return 0
+    t = pkt["ticket"]
+    print(f"== PACKET: {t['id']} [{t.get('status')}] {t.get('title')} ==")
+    owner = (t.get("owner") or {}).get("name")
+    if owner and owner != "unknown":
+        print(f"owner: {owner}")
+    if t.get("tags"):
+        print(f"tags: {', '.join(t['tags'])}")
+    if (t.get("body") or "").strip():
+        print("\n-- ticket body --")
+        for line in (t["body"].strip().splitlines())[:40]:
+            print(f"  {line}")
+    ancestors = pkt.get("ancestors") or []
+    if ancestors:
+        print("\n-- ancestors --")
+        for a in ancestors:
+            print(f"  {a['id']}  [{a.get('status')}]  {a.get('title')}")
+    plan = pkt.get("plan")
+    if plan:
+        p = plan.get("progress") or {}
+        print("\n-- plan --")
+        print(f"  progress {p.get('percent', 0)}% "
+              f"({p.get('done', 0)}/{p.get('total', 0)} done)")
+        for r in (plan.get("remaining_items") or [])[:12]:
+            print(f"  - {r['id']}  [{r['status']}]  {r['title']}")
+    blocked = pkt.get("blocked") or []
+    if blocked:
+        print(f"\n-- blocked ({len(blocked)}) --")
+        for b in blocked[:10]:
+            print(f"  ! {b['id']}  [{b['status']}]  {b['title']}")
+    events = pkt.get("events") or []
+    print(f"\n-- last {len(events)} events --")
+    for e in events:
+        actor = (e.get("actor") or {}).get("name", "?")
+        payload = e.get("payload") or {}
+        text = payload.get("text") or payload.get("marker") or ""
+        extra = f"  {str(text)[:100]}" if text else ""
+        print(f"  {e.get('ts', '')[:19]}  {actor}: {e.get('kind')}{extra}")
+    threads = pkt.get("threads") or []
+    print(f"\n-- threads ({len(threads)}) --")
+    for th in threads[:10]:
+        print(f"  {th.get('platform')}  room={th.get('room_id')}"
+              f"  thread={th.get('thread_id') or '-'}")
+    pages = pkt.get("wiki_pages") or []
+    print(f"\n-- related wiki pages ({len(pages)}) --")
+    for pg in pages[:10]:
+        slug = pg.get("slug") or pg.get("id") or "?"
+        print(f"  [[{slug}]]  {pg.get('title', '')}")
+    return 0
+
+
 def _cmd_board(hub: HubClient, args) -> int:
     board = hub.board()
     if args.json:
@@ -323,6 +378,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--full", action="store_true",
                     help="canonical lane-C translation (all event kinds)")
     sp.set_defaults(func=_cmd_digest)
+
+    sp = sub.add_parser("packet",
+                        help="complete shared packet for one agent "
+                             "(ticket, ancestors, plan, events, threads, wiki)")
+    sp.add_argument("id")
+    sp.add_argument("--json", action="store_true", help="raw JSON output")
+    sp.set_defaults(func=_cmd_packet)
 
     sp = sub.add_parser("board", help="tickets grouped by status")
     sp.add_argument("--json", action="store_true")

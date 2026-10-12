@@ -199,3 +199,47 @@ class HubClient:
         return self._request("POST",
                              f"/adapters/{urllib.parse.quote(platform)}/inbound",
                              body=body)
+
+    # -- wiki ------------------------------------------------------------------
+
+    def wiki_search(self, q: str) -> list:
+        return self._request("GET", "/wiki-search", params={"q": q}) or []
+
+    # -- packet (ticket as shared packet, v2 pillar 3) ---------------------------
+
+    def packet(self, ticket_id: str) -> dict:
+        """The complete context any agent needs for one ticket.
+
+        Composes: ticket, ancestor chain, plan (children + progress %),
+        blocked list, last 15 events, bound chat threads, and matching wiki
+        pages (search by title). If the wiki layer is absent (older hub or
+        wiki lane not merged), wiki pages degrade to [] — the packet still
+        builds. If it's not in the packet, it doesn't exist for the lane.
+        """
+        ticket = self.get(ticket_id)
+        try:
+            lin = self.lineage(ticket_id) or {}
+        except HubError:
+            lin = {}
+        try:
+            plan = self.plan(ticket_id)
+        except HubError:
+            plan = None
+        try:
+            threads = self.bindings(ticket_id) or []
+        except HubError:
+            threads = []
+        try:
+            wiki_pages = self.wiki_search(ticket.get("title", ""))
+        except HubError:
+            wiki_pages = []  # wiki absent / search unsupported: graceful
+        events = lin.get("events") or []
+        return {
+            "ticket": ticket,
+            "ancestors": lin.get("ancestry") or [],
+            "plan": plan,
+            "blocked": (plan or {}).get("blocked_by_ray") or [],
+            "events": events[-15:],
+            "threads": threads,
+            "wiki_pages": wiki_pages,
+        }
