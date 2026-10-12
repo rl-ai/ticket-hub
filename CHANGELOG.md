@@ -7,6 +7,9 @@ per-commit record).
 
 ## [Unreleased]
 
+### Accepted
+- v1 accepted by Ray 2026-10-12 — hub becomes the go-forward work OS (GLM review PASS-CONDITIONAL, all blockers closed).
+
 ## [1.1] - 2026-10-11 — Plan view
 ### Added
 - `GET /tickets/{id}/plan` endpoint and `hub plan` CLI verb.
