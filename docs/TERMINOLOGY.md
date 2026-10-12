@@ -1,0 +1,61 @@
+# Terminology
+
+Shared vocabulary for ticket-hub and the operation around it. Use these
+terms verbatim in tickets, docs, and reports.
+
+## Ray-gated
+
+Requiring Ray's explicit decision before it may proceed — acceptance of a
+candidate, a promotion to `main`, a production action, a credential grant.
+Nothing else (green tests, reviewer approval, agent consensus) counts as
+that decision. In the hub a Ray-gated item carries a
+`{"marker": "RAY-GATED"}` event (see the migrate script and `/plan`), so
+the gate is queryable, not folklore.
+
+## Blocked by Ray
+
+The user's term for anything currently awaiting Ray's approval or action —
+keep it verbatim (this exact phrase) in UI, CLI, and docs. Mechanically: a
+ticket with status `blocked`, or carrying a `RAY-GATED` marker event,
+inside a project's subtree; `hub plan` lists them under
+`blocked_by_ray` / "BLOCKED BY RAY". Blocked ≠ stale: it names a specific
+waiting-on-a-person state with a stated reason.
+
+## Seat
+
+A configured runtime slot for one model/family in the orchestration layer:
+identity plus model, config, context budget, and isolation rules. Seat
+identity is static; runtime observations may reduce a seat's eligibility
+for work but never rewrite who the seat is or what authority it has.
+
+## Lane
+
+A parallel workstream that builds one slice of the system against the
+design contract in an isolated sandbox worktree (e.g. the CLI lane, the
+OUTBOUND lane, Lane A = store, Lane B = API, Lane C = adapters/translate).
+Lanes integrate through the gateway facade; the whole test board must be
+green before the candidate ships.
+
+## Cycle
+
+One iteration of the forge build loop: pick work → build in lanes → test
+board → review → promotion candidate → (Ray-gated) accept/reject → next
+cycle. A rejection starts the successor cycle from the same frozen
+snapshot plus rejection evidence; it never patches reviewed bytes.
+
+## Digest
+
+The reader-facing, event-derived update for a project: bullets translated
+from real events, each citing the event ids it paraphrases
+(`hub digest`, `GET /tickets/{id}/digest`). No-fabrication is structural —
+citations must exist in the input, and the optional GLM polish pass may
+reword prose but never add citations.
+
+## Binding
+
+A ThreadBinding linking one ticket to one chat thread on one platform
+(matrix / discord / slack): room + thread + root message
+(`hub bind`, `POST /tickets/{id}/bind`, `GET /tickets/{id}/bindings`).
+Inbound replies become `thread_message` events on the bound ticket;
+outbound digests post into it. One ticket = one thread root; child tickets
+post under the parent binding's root.
