@@ -55,8 +55,11 @@
       b.classList.toggle("active", b.dataset.view === view));
     document.querySelectorAll(".view").forEach((v) =>
       v.classList.toggle("hidden", v.id !== "view-" + view));
-    const titles = { board: "Board", graph: "Graph", updates: "Updates" };
-    $("#view-title").textContent = titles[view];
+    const titles = {
+      board: "Board", graph: "Graph", updates: "Updates",
+      wiki: "Wiki", monitoring: "Monitoring", admin: "Admin", roles: "Roles",
+    };
+    $("#view-title").textContent = titles[view] || label(view);
     refresh();
   }
 
@@ -466,6 +469,516 @@
 
   $("#updates-project").addEventListener("change", (e) => showDigest(e.target.value));
 
+  // ---------------------------------------------------------------- helpers
+  function apiSafe(path, opts) {
+    // Like api() but resolves to null on any failure (endpoint absent yet).
+    return api(path, opts).catch(() => null);
+  }
+  function fmtTs(ts) {
+    if (!ts) return "unknown";
+    return String(ts).replace("T", " ").slice(0, 19);
+  }
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText)
+      return navigator.clipboard.writeText(text).then(() => toast("Copied"));
+    return Promise.reject(new Error("clipboard unavailable"));
+  }
+  function debounce(fn, ms) {
+    let t;
+    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+  }
+
+  // ---------------------------------------------------------------- markdown
+  // Small dependency-free renderer: headings, bold/italic, inline code,
+  // fenced code, links, [[WikiLink]] tokens, lists, blockquotes.
+  function renderMarkdown(md) {
+    const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    function inline(s) {
+      s = esc(s);
+      s = s.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
+      s = s.replace(/\[\[([^\]]+)\]\]/g, (_, w) => {
+        const slug = w.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+        return `<a class="wikilink" data-slug="${slug}">${esc(w.trim())}</a>`;
+      });
+      s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+|\/[^)\s]*)\)/g,
+        (_, txt, href) => `<a href="${href}" target="_blank" rel="noopener">${txt}</a>`);
+      s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+      return s;
+    }
+    const lines = String(md || "").split(/\r?\n/);
+    const out = [];
+    let i = 0, para = [], list = null, quote = [];
+    const flushPara = () => {
+      if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; }
+    };
+    const flushList = () => {
+      if (list) {
+        out.push(`<${list.tag}>` + list.items.map((it) => `<li>${inline(it)}</li>`).join("") + `</${list.tag}>`);
+        list = null;
+      }
+    };
+    const flushQuote = () => {
+      if (quote.length) { out.push(`<blockquote>${quote.map((q) => `<p>${inline(q)}</p>`).join("")}</blockquote>`); quote = []; }
+    };
+    const flushAll = () => { flushPara(); flushList(); flushQuote(); };
+    while (i < lines.length) {
+      const line = lines[i];
+      if (/^```/.test(line.trim())) {                    // fenced code
+        flushAll();
+        const code = [];
+        i++;
+        while (i < lines.length && !/^```/.test(lines[i].trim())) { code.push(lines[i]); i++; }
+        i++;
+        out.push(`<pre><code>${esc(code.join("\n"))}</code></pre>`);
+        continue;
+      }
+      const h = line.match(/^(#{1,6})\s+(.*)/);
+      if (h) { flushAll(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); i++; continue; }
+      const ul = line.match(/^\s*[-*+]\s+(.*)/);
+      if (ul) {
+        flushPara(); flushQuote();
+        if (!list || list.tag !== "ul") { flushList(); list = { tag: "ul", items: [] }; }
+        list.items.push(ul[1]); i++; continue;
+      }
+      const ol = line.match(/^\s*\d+[.)]\s+(.*)/);
+      if (ol) {
+        flushPara(); flushQuote();
+        if (!list || list.tag !== "ol") { flushList(); list = { tag: "ol", items: [] }; }
+        list.items.push(ol[1]); i++; continue;
+      }
+      const bq = line.match(/^\s*>\s?(.*)/);
+      if (bq) { flushPara(); flushList(); quote.push(bq[1]); i++; continue; }
+      if (/^\s*$/.test(line)) { flushAll(); i++; continue; }
+      flushList(); flushQuote();
+      para.push(line); i++;
+    }
+    flushAll();
+    return out.join("\n");
+  }
+
+  function mountMarkdown(container, md) {
+    container.innerHTML = renderMarkdown(md);
+    container.querySelectorAll("a.wikilink").forEach((a) => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        openWikiPage(a.dataset.slug);
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------- wiki
+  const wiki = {
+    pages: [],
+    slug: null,
+    searchSeq: 0,
+    loaded: false,
+  };
+
+  async function renderWiki() {
+    if (!wiki.loaded) {
+      const pages = await apiSafe("/wiki");
+      wiki.pages = Array.isArray(pages) ? pages : [];
+      wiki.loaded = true;
+    }
+    renderWikiSidebar(wiki.pages);
+    if (wiki.slug) await openWikiPage(wiki.slug, true);
+  }
+
+  function renderWikiSidebar(pages) {
+    const root = $("#wiki-categories");
+    root.textContent = "";
+    if (!pages.length) {
+      root.append(el("div", "muted", "No wiki pages yet."));
+      return;
+    }
+    const groups = {};
+    for (const p of pages) {
+      const cat = (p.tags && p.tags.length) ? label(p.tags[0]) : "Uncategorized";
+      (groups[cat] = groups[cat] || []).push(p);
+    }
+    for (const cat of Object.keys(groups).sort()) {
+      const sec = el("div", "wiki-cat");
+      sec.append(el("div", "wiki-cat-name", cat));
+      for (const p of groups[cat]) {
+        const item = el("button", "wiki-page-link" + (p.slug === wiki.slug ? " active" : ""), p.title || p.slug);
+        item.addEventListener("click", () => openWikiPage(p.slug));
+        sec.append(item);
+      }
+      root.append(sec);
+    }
+  }
+
+  async function openWikiPage(slug, keepSearch) {
+    wiki.slug = slug;
+    if (!keepSearch) { $("#wiki-search").value = ""; }
+    closeWikiEditor();
+    renderWikiSidebar(wiki.pages.length ? wiki.pages : []);
+    const content = $("#wiki-content");
+    content.textContent = "";
+    content.append(el("p", "muted", "Loading…"));
+    const data = await apiSafe(`/wiki/${encodeURIComponent(slug)}`);
+    if (!data || !data.page) {
+      content.textContent = "";
+      content.append(el("p", "muted", "Page not found (wiki API unavailable?)."));
+      return;
+    }
+    const page = data.page;
+    const head = el("div", "wiki-meta");
+    head.append(el("h2", "wiki-page-title", page.title || page.slug));
+    const metaRow = el("div", "wiki-meta-row");
+    metaRow.append(el("span", "wiki-rev", `rev ${page.rev != null ? page.rev : "?"}`));
+    metaRow.append(el("span", "wiki-actor", page.actor || "unknown"));
+    metaRow.append(el("span", "wiki-ts", fmtTs(page.ts)));
+    (page.tags || []).forEach((t) => metaRow.append(el("span", "chip", t)));
+    const editBtn = el("button", "btn wiki-edit-btn", "Edit");
+    editBtn.addEventListener("click", () => openWikiEditor(page));
+    metaRow.append(editBtn);
+    head.append(metaRow);
+    content.append(head);
+
+    const body = el("div", "wiki-body");
+    mountMarkdown(body, page.body_md || "");
+    content.append(body);
+
+    const hist = el("div", "wiki-history");
+    hist.append(el("h3", null, "History"));
+    const items = Array.isArray(data.history) ? data.history : [];
+    if (!items.length) hist.append(el("div", "muted", "No history."));
+    for (const h of items) {
+      const row = el("div", "wiki-hist-row");
+      row.append(el("span", "wiki-rev", `rev ${h.rev != null ? h.rev : "?"}`));
+      row.append(el("span", null, h.actor || "unknown"));
+      row.append(el("span", "muted", fmtTs(h.ts)));
+      if (h.rev !== page.rev) {
+        row.append(el("span", "wiki-hist-note", "older-rev rendering pending"));
+      } else {
+        row.append(el("span", "wiki-hist-note", "current"));
+      }
+      hist.append(row);
+    }
+    content.append(hist);
+  }
+
+  function openWikiEditor(page) {
+    $("#wiki-edit-title").value = page.title || "";
+    $("#wiki-edit-tags").value = (page.tags || []).join(", ");
+    $("#wiki-edit-body").value = page.body_md || "";
+    $("#wiki-editor").classList.remove("hidden");
+    $("#wiki-edit-save").dataset.slug = page.slug;
+  }
+  function closeWikiEditor() { $("#wiki-editor").classList.add("hidden"); }
+
+  $("#wiki-edit-cancel").addEventListener("click", closeWikiEditor);
+  $("#wiki-edit-save").addEventListener("click", async (e) => {
+    const slug = e.currentTarget.dataset.slug || wiki.slug;
+    if (!slug) return;
+    const body = {
+      title: $("#wiki-edit-title").value.trim(),
+      body_md: $("#wiki-edit-body").value,
+      tags: $("#wiki-edit-tags").value.split(",").map((s) => s.trim()).filter(Boolean),
+    };
+    try {
+      const res = await api(`/wiki/${encodeURIComponent(slug)}`, { method: "POST", body });
+      toast(res && res.rev != null ? `Saved rev ${res.rev}` : "Saved new revision");
+      closeWikiEditor();
+      wiki.loaded = false;               // refresh index for new title/tags
+      await renderWiki();
+      await openWikiPage(slug);
+    } catch (err) {
+      toast("Save failed: " + err.message);
+    }
+  });
+
+  $("#wiki-search").addEventListener("input", debounce(async (e) => {
+    const q = e.target.value.trim();
+    const seq = ++wiki.searchSeq;
+    if (!q) { renderWikiSidebar(wiki.pages); return; }
+    const results = await apiSafe("/wiki-search?q=" + encodeURIComponent(q));
+    if (seq !== wiki.searchSeq) return;   // stale response
+    const root = $("#wiki-categories");
+    root.textContent = "";
+    if (!results || !results.length) {
+      root.append(el("div", "muted", "No matches."));
+      return;
+    }
+    root.append(el("div", "wiki-cat-name", "Search results"));
+    for (const r of results) {
+      const item = el("button", "wiki-page-link", r.title || r.slug);
+      if (r.snippet) item.append(el("div", "wiki-snippet", r.snippet));
+      item.addEventListener("click", () => openWikiPage(r.slug));
+      root.append(item);
+    }
+  }, 250));
+
+  // ---------------------------------------------------------------- monitoring
+  async function renderMonitoring() {
+    const root = $("#monitoring-body");
+    root.textContent = "";
+    const status = await apiSafe("/admin/status");
+    if (!status) {
+      root.append(el("div", "mon-card", "Monitoring data unavailable (/admin/status not reachable)."));
+    } else {
+      root.append(healthCard(status.health));
+      root.append(servicesCard(status.services));
+      root.append(backupsCard(status.backups));
+      root.append(kvCard("Maintenance", [
+        ["Last run", fmtTs(status.maintenance && status.maintenance.last_run)],
+        ["Summary", (status.maintenance && status.maintenance.summary) || "unknown"],
+      ]));
+      root.append(kvCard("Hygiene", [
+        ["Result", (status.hygiene && status.hygiene.result) || "unknown"],
+        ["At", fmtTs(status.hygiene && status.hygiene.ts)],
+      ]));
+      if (status.seats_note) {
+        const seats = el("div", "mon-card mon-seats");
+        seats.append(el("div", "mon-card-title", "Seats"));
+        seats.append(el("div", null, String(status.seats_note)));
+        root.append(seats);
+      }
+    }
+    await renderBlockedInbox();
+  }
+
+  function healthCard(health) {
+    const h = health || {};
+    const card = el("div", "mon-card " + (h.ok ? "mon-ok" : "mon-fail"));
+    const badge = el("span", "mon-badge " + (h.ok ? "mon-badge-ok" : "mon-badge-fail"),
+      h.ok === true ? "OK" : (h.ok === false ? "FAIL" : "UNKNOWN"));
+    card.append(el("div", "mon-card-title", "Hub health"), badge);
+    card.append(el("div", "mon-sub", "as of " + fmtTs(h.ts)));
+    if (h.last_error) card.append(el("div", "mon-error", String(h.last_error)));
+    return card;
+  }
+
+  function servicesCard(services) {
+    const card = el("div", "mon-card mon-card-wide");
+    card.append(el("div", "mon-card-title", "Services"));
+    const list = Array.isArray(services) ? services : [];
+    if (!list.length) { card.append(el("div", "muted", "unknown")); return card; }
+    const table = el("table", "mon-table");
+    const thead = el("tr");
+    ["Label", "Loaded", "PID", "State"].forEach((h) => thead.append(el("th", null, h)));
+    table.append(thead);
+    for (const s of list) {
+      const tr = el("tr");
+      tr.append(el("td", null, s.label || "unknown"));
+      const loaded = s.loaded === true ? "loaded" : (s.loaded === false ? "unloaded" : "unknown");
+      tr.append(el("td", loaded === "loaded" ? "mon-yes" : "mon-no", loaded));
+      tr.append(el("td", null, s.pid != null ? String(s.pid) : "—"));
+      tr.append(el("td", null, s.state || "unknown"));
+      table.append(tr);
+    }
+    card.append(table);
+    return card;
+  }
+
+  function backupsCard(backups) {
+    const b = backups || {};
+    const stale = typeof b.age_h === "number" && b.age_h > 26;
+    const card = el("div", "mon-card" + (stale ? " mon-alert" : ""));
+    card.append(el("div", "mon-card-title", "Backups" + (stale ? " — STALE" : "")));
+    card.append(el("div", null, "Newest: " + (b.newest || "unknown")));
+    card.append(el("div", null, "Age: " + (b.age_h != null ? b.age_h + "h (budget 26h)" : "unknown")));
+    card.append(el("div", null, "Count: " + (b.count != null ? b.count : "unknown")));
+    return card;
+  }
+
+  function kvCard(title, rows) {
+    const card = el("div", "mon-card");
+    card.append(el("div", "mon-card-title", title));
+    for (const [k, v] of rows) {
+      const row = el("div", "mon-kv");
+      row.append(el("span", "muted", k));
+      row.append(el("span", null, String(v)));
+      card.append(row);
+    }
+    return card;
+  }
+
+  async function renderBlockedInbox() {
+    const root = $("#blocked-inbox");
+    root.textContent = "";
+    let blocked = [];
+    try {
+      const data = await api("/board");
+      const cols = data.columns || {};
+      for (const s of Object.keys(cols))
+        if (String(s).toLowerCase() === "blocked") blocked = cols[s] || [];
+    } catch {
+      root.append(el("div", "muted", "Board unavailable."));
+      return;
+    }
+    if (!blocked.length) {
+      root.append(el("div", "muted", "Nothing blocked. 🎉"));
+      return;
+    }
+    for (const t of blocked) {
+      const row = el("div", "card blocked-row");
+      row.append(el("div", "card-title", t.title));
+      const meta = el("div", "card-meta");
+      meta.append(el("span", `status-pill st-${t.status}`, label(t.status)));
+      if (t.id) meta.append(el("span", "chip", t.id));
+      row.append(meta);
+      row.addEventListener("click", () => openDrawer(t.id));
+      root.append(row);
+    }
+  }
+
+  // ---------------------------------------------------------------- admin
+  const ADMIN_COMMANDS = [
+    { label: "Load server", cmd: "launchctl load ~/Library/LaunchAgents/com.ticket-hub.server.plist" },
+    { label: "Unload server", cmd: "launchctl unload ~/Library/LaunchAgents/com.ticket-hub.server.plist" },
+    { label: "Load outbound", cmd: "launchctl load ~/Library/LaunchAgents/com.ticket-hub.outbound.plist" },
+    { label: "Unload outbound", cmd: "launchctl unload ~/Library/LaunchAgents/com.ticket-hub.outbound.plist" },
+    { label: "Load maintenance", cmd: "launchctl load ~/Library/LaunchAgents/com.ticket-hub.maintenance.plist" },
+    { label: "Unload maintenance", cmd: "launchctl unload ~/Library/LaunchAgents/com.ticket-hub.maintenance.plist" },
+    { label: "Hygiene check", cmd: "scripts/hygiene_check.sh" },
+    { label: "Backup", cmd: "scripts/backup.sh" },
+    { label: "Healthcheck", cmd: "scripts/healthcheck.sh" },
+    { label: "Restore drill", cmd: "scripts/restore_drill.sh" },
+  ];
+
+  async function renderAdmin() {
+    const root = $("#admin-body");
+    root.textContent = "";
+    const status = await apiSafe("/admin/status");
+
+    const countsCard = el("div", "mon-card admin-panel");
+    countsCard.append(el("div", "mon-card-title", "Database"));
+    const counts = (status && status.counts) || {};
+    const grid = el("div", "admin-counts");
+    [["Tickets", counts.tickets], ["Edges", counts.edges],
+     ["Events", counts.events], ["Wiki pages", counts.wiki_pages]].forEach(([k, v]) => {
+      const box = el("div", "admin-count");
+      box.append(el("div", "admin-count-num", v != null ? String(v) : "unknown"));
+      box.append(el("div", "muted", k));
+      grid.append(box);
+    });
+    countsCard.append(grid);
+    countsCard.append(el("div", "mon-sub", "DB path: " +
+      ((status && (status.db_path || status.counts && status.counts.db_path)) || "unknown")));
+    root.append(countsCard);
+
+    const cmdCard = el("div", "mon-card admin-panel admin-panel-wide");
+    cmdCard.append(el("div", "mon-card-title", "Commands (print-only — run these yourself)"));
+    for (const c of ADMIN_COMMANDS) {
+      const row = el("div", "admin-cmd-row");
+      row.append(el("div", "admin-cmd-label", c.label));
+      const pre = el("pre", "admin-cmd");
+      pre.append(el("code", null, c.cmd));
+      row.append(pre);
+      const copy = el("button", "btn admin-copy-btn", "Copy");
+      copy.addEventListener("click", () => copyText(c.cmd).catch(() => toast("Clipboard unavailable")));
+      row.append(copy);
+      cmdCard.append(row);
+    }
+    root.append(cmdCard);
+
+    const logCard = el("div", "mon-card admin-panel admin-panel-wide");
+    logCard.append(el("div", "mon-card-title", "Log tail — server"));
+    const logBody = el("pre", "admin-log");
+    logCard.append(logBody);
+    root.append(logCard);
+    try {
+      const res = await fetch("/admin/log?name=server");
+      if (res.status === 404) {
+        logBody.textContent = "log tailing unavailable in this build";
+      } else if (!res.ok) {
+        logBody.textContent = "log tail unavailable (" + res.status + ")";
+      } else {
+        const text = await res.text();
+        let parsed = null;
+        try { parsed = JSON.parse(text); } catch {}
+        logBody.textContent = (parsed && (parsed.lines || parsed.log || parsed.text)) || text || "(empty)";
+      }
+    } catch {
+      logBody.textContent = "log tailing unavailable in this build";
+    }
+  }
+
+  // ---------------------------------------------------------------- roles
+  const FALLBACK_ROLES = [
+    { key: "design", mission: "UX/interaction quality bar for anything user-facing.",
+      quality_bar: "Every user-facing surface meets the calm, Linear-class bar.",
+      inputs: ["Mockups", "Live UI", "User feedback"],
+      outputs: ["Design critiques", "Interaction specs"],
+      seat: "Any strong visual-reasoning seat" },
+    { key: "pmf", mission: "Product-market-fit challenge: who wants this, why now.",
+      quality_bar: "Answers the 'what would make Ray stop using it' question.",
+      inputs: ["Feature proposals", "Usage signals"],
+      outputs: ["PMF verdicts", "Kill/scale recommendations"],
+      seat: "Any strong reasoning seat" },
+    { key: "code-design", mission: "Architecture review: contracts, edges, failure modes.",
+      quality_bar: "Distinct from execution; reviews interfaces, not diffs.",
+      inputs: ["Design docs", "API contracts"],
+      outputs: ["Architecture reviews", "Contract revisions"],
+      seat: "GLM-class reviewer" },
+    { key: "execution", mission: "Builders; the swarm's bulk. Pull assigned tickets.",
+      quality_bar: "Work in sandbox lanes; report with evidence.",
+      inputs: ["Assigned tickets", "Packets"],
+      outputs: ["Code in lanes", "Evidence-backed reports"],
+      seat: "Assigned remote seat" },
+    { key: "measurement", mission: "Defines and tracks the metrics that prove a feature works.",
+      quality_bar: "Kills vanity claims; every claim has a number.",
+      inputs: ["Test counts", "Latency data", "Adoption signals"],
+      outputs: ["Metric definitions", "Measurement reports"],
+      seat: "Any seat; deterministic tools preferred" },
+    { key: "product-owner", mission: "Planner/reviewer: sequences scope, accepts or returns work per ticket.",
+      quality_bar: "Reviewer ≠ author; acceptance is Ray's alone.",
+      inputs: ["Ticket queue", "Execution reports"],
+      outputs: ["Sequenced scope", "Accept/return decisions"],
+      seat: "GLM seat (default engine)" },
+    { key: "orchestrator", mission: "Coordinates tickets, spawns lanes, keeps the ticket as the shared packet.",
+      quality_bar: "Never reviews its own output.",
+      inputs: ["Full ticket graph", "Seat telemetry"],
+      outputs: ["Lane assignments", "Merged integrations"],
+      seat: "Hermes" },
+  ];
+
+  async function renderRoles() {
+    const root = $("#roles-body");
+    root.textContent = "";
+    let roles = null;
+    try {
+      const res = await fetch("/roles");
+      if (res.ok) {
+        const data = await res.json();
+        roles = Array.isArray(data) ? data : (data && Array.isArray(data.roles) ? data.roles : null);
+      }
+    } catch {}
+    if (!roles || !roles.length) roles = FALLBACK_ROLES;
+    for (const r of roles) {
+      root.append(roleCard(r));
+    }
+  }
+
+  function roleCard(r) {
+    const card = el("div", "role-card");
+    card.append(el("h3", "role-name", label(r.key || r.name || "role")));
+    const field = (name, val) => {
+      if (val == null) return;
+      const sec = el("div", "role-field");
+      sec.append(el("div", "role-field-name", name));
+      if (Array.isArray(val)) {
+        const ul = el("ul", "role-list");
+        val.forEach((v) => ul.append(el("li", null, String(v))));
+        sec.append(ul);
+      } else {
+        sec.append(el("div", "role-field-val", String(val)));
+      }
+      card.append(sec);
+    };
+    field("Mission", r.mission);
+    field("Quality bar", r.quality_bar || r.qualityBar);
+    field("Inputs", r.inputs);
+    field("Outputs", r.outputs);
+    field("Seat preference", r.seat || r.seat_preference || r.seatPreference);
+    return card;
+  }
+
+
   // ---------------------------------------------------------------- new ticket
   $("#new-ticket-btn").addEventListener("click", () => $("#modal").classList.remove("hidden"));
   $("#modal-cancel").addEventListener("click", () => $("#modal").classList.add("hidden"));
@@ -503,6 +1016,10 @@
       if (state.view === "board") { await loadBoard(); renderBoard(); }
       else if (state.view === "graph") { await renderGraph(); }
       else if (state.view === "updates") { await renderUpdates(); }
+      else if (state.view === "wiki") { await renderWiki(); }
+      else if (state.view === "monitoring") { await renderMonitoring(); }
+      else if (state.view === "admin") { await renderAdmin(); }
+      else if (state.view === "roles") { await renderRoles(); }
     } catch (err) {
       toast("Load failed: " + err.message);
     }
@@ -510,4 +1027,5 @@
 
   refresh();
   setInterval(() => { if (!document.hidden && state.view === "board") refresh(); }, 15000);
+  setInterval(() => { if (!document.hidden && state.view === "monitoring") refresh(); }, 30000);
 })();
