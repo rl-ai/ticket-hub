@@ -203,6 +203,48 @@ class Event:
 
 
 @dataclass
+class WikiPage:
+    """One immutable revision of a wiki page (DESIGN-v2 pillar 1).
+
+    Current page for a slug = max(rev). Like events there is deliberately no
+    update/delete path: revisions are append-only (DB triggers enforce it).
+    ``actor`` is the plain name recorded on the write (audit, like events).
+    """
+
+    id: str  # page_id, WP-<ulid>
+    slug: str
+    rev: int
+    title: str
+    body_md: str = ""
+    tags: list[str] = field(default_factory=list)
+    actor: str = ""
+    ts: str = ""  # ISO-8601 UTC
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "slug": self.slug,
+            "rev": self.rev,
+            "title": self.title,
+            "body_md": self.body_md,
+            "tags": list(self.tags),
+            "actor": self.actor,
+            "ts": self.ts,
+        }
+
+    def slim(self) -> dict:
+        """Index/history shape: no body (cheap lists)."""
+        return {
+            "id": self.id,
+            "slug": self.slug,
+            "rev": self.rev,
+            "title": self.title,
+            "tags": list(self.tags),
+            "ts": self.ts,
+        }
+
+
+@dataclass
 class ThreadBinding:
     ticket_id: str
     platform: str  # matrix | discord | slack

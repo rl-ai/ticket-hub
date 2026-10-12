@@ -161,6 +161,13 @@ class InboundMessage(BaseModel):
     text: str
 
 
+class WikiPageCreate(BaseModel):
+    title: str
+    body_md: str = ""
+    tags: list[str] = []
+    actor: Optional[Any] = None
+
+
 # --------------------------------------------------------------------------
 # App factory
 # --------------------------------------------------------------------------
@@ -513,6 +520,64 @@ def create_app(store: Any = None) -> FastAPI:
         )
         # Reply-posts-back is Lane C (adapters/) territory; inert in v0.
         return {"event": event, "posted": False}
+
+    # ---- Wiki (DESIGN-v2 pillar 1) ------------------------------------------
+
+    def _wiki_or_404(slug: str) -> dict:
+        page = get_store().get_page(slug)
+        if page is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "not_found",
+                        "message": f"Wiki page {slug} not found"},
+            )
+        return page
+
+    @app.get("/wiki")
+    def list_wiki():
+        """Index: latest revision per slug (slim, no body)."""
+        pages = get_store().list_pages()
+        return [
+            {"slug": p.get("slug"), "title": p.get("title"),
+             "tags": p.get("tags", []), "rev": p.get("rev"),
+             "ts": p.get("ts")}
+            for p in pages
+        ]
+
+    @app.get("/wiki-search")
+    def search_wiki(q: str = ""):
+        """Case-insensitive substring match on title/body/tags of the
+        latest revision; returns slug/title/snippet."""
+        store = get_store()
+        if not hasattr(store, "search_pages"):
+            raise HTTPException(status_code=501,
+                                detail={"code": "unsupported",
+                                        "message": "Store does not expose wiki"})
+        results = []
+        for p in store.search_pages(q):
+            body = p.get("body_md") or ""
+            results.append({"slug": p.get("slug"),
+                            "title": p.get("title"),
+                            "snippet": body[:200]})
+        return results
+
+    @app.get("/wiki/{slug}")
+    def get_wiki(slug: str):
+        """Full latest page + slim history (all revisions, no bodies)."""
+        page = _wiki_or_404(slug)
+        history = [
+            {"slug": h.get("slug"), "rev": h.get("rev"),
+             "title": h.get("title"), "tags": h.get("tags", []),
+             "actor": h.get("actor", ""), "ts": h.get("ts")}
+            for h in get_store().page_history(slug)
+        ]
+        return {"page": page, "history": history}
+
+    @app.post("/wiki/{slug}", status_code=201)
+    def put_wiki(slug: str, req: WikiPageCreate):
+        return get_store().put_page(
+            slug, title=req.title, body_md=req.body_md,
+            tags=list(req.tags), actor=req.actor)
 
     # ---- UI ----------------------------------------------------------------
 

@@ -29,6 +29,7 @@ class FakeStore:
         self.events: list[dict] = []
         self.edges: list[dict] = []
         self.bindings: list[dict] = []
+        self.pages: list[dict] = []
         self._ids = itertools.count(1)
 
     # -- helpers ----------------------------------------------------------
@@ -240,3 +241,58 @@ class FakeStore:
         for t in self.tickets.values():
             columns[t["status"]].append(dict(t))
         return columns
+
+    # -- wiki (DESIGN-v2 pillar 1) ------------------------------------------
+
+    def put_page(self, slug: str, *, title: str, body_md: str = "",
+                 tags: list[str] | None = None, actor=None) -> dict:
+        if not slug or not slug.strip():
+            raise ValueError("wiki slug must be non-empty")
+        if not title or not str(title).strip():
+            raise ValueError("wiki title must be non-empty")
+        slug = slug.strip()
+        rev = max((p["rev"] for p in self.pages if p["slug"] == slug),
+                  default=0) + 1
+        if isinstance(actor, dict):
+            actor = actor.get("name") or actor.get("id") or ""
+        page = {
+            "id": self._next_id("WP"),
+            "slug": slug,
+            "rev": rev,
+            "title": title,
+            "body_md": body_md,
+            "tags": list(tags or []),
+            "actor": str(actor or ""),
+            "ts": _now(),
+        }
+        self.pages.append(page)
+        return dict(page)
+
+    def get_page(self, slug: str) -> dict | None:
+        latest = None
+        for p in self.pages:
+            if p["slug"] == slug and (latest is None or p["rev"] > latest["rev"]):
+                latest = p
+        return dict(latest) if latest else None
+
+    def list_pages(self) -> list[dict]:
+        latest: dict[str, dict] = {}
+        for p in self.pages:
+            cur = latest.get(p["slug"])
+            if cur is None or p["rev"] > cur["rev"]:
+                latest[p["slug"]] = p
+        return [dict(p) for _, p in sorted(latest.items())]
+
+    def page_history(self, slug: str) -> list[dict]:
+        return [dict(p) for p in sorted(
+            (p for p in self.pages if p["slug"] == slug), key=lambda p: p["rev"])]
+
+    def search_pages(self, q: str) -> list[dict]:
+        needle = (q or "").lower()
+        out = []
+        for p in self.list_pages():
+            hay = (p["title"] + " " + p["body_md"] + " "
+                   + " ".join(p["tags"])).lower()
+            if needle in hay:
+                out.append(p)
+        return out

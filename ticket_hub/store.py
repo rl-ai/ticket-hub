@@ -21,6 +21,7 @@ from .model import (
     SYSTEM_ACTOR,
     ThreadBinding,
     Ticket,
+    WikiPage,
     assert_transition,
     coerce_status,
     new_id,
@@ -95,6 +96,30 @@ CREATE TABLE IF NOT EXISTS thread_bindings (
     root_msg_id TEXT,
     created_at TEXT NOT NULL
 );
+
+-- Wiki (DESIGN-v2 pillar 1): append-only page revisions. Current page for a
+-- slug = max(rev). Same durability ethos as events: no UPDATE/DELETE.
+CREATE TABLE IF NOT EXISTS wiki_pages (
+    page_id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL,
+    rev INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    body_md TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '[]',
+    actor TEXT NOT NULL DEFAULT '',
+    ts TEXT NOT NULL,
+    UNIQUE (slug, rev)
+);
+CREATE INDEX IF NOT EXISTS idx_wiki_slug ON wiki_pages (slug, rev);
+
+CREATE TRIGGER IF NOT EXISTS wiki_pages_no_update BEFORE UPDATE ON wiki_pages
+BEGIN
+    SELECT RAISE(ABORT, 'wiki pages are append-only: update forbidden');
+END;
+CREATE TRIGGER IF NOT EXISTS wiki_pages_no_delete BEFORE DELETE ON wiki_pages
+BEGIN
+    SELECT RAISE(ABORT, 'wiki pages are append-only: delete forbidden');
+END;
 """
 
 
@@ -532,6 +557,92 @@ class Store:
             for r in rows
         ]
 
+    # -- wiki (DESIGN-v2 pillar 1, append-only revisions) ----------------------
+
+    def put_page(
+        self,
+        slug: str,
+        title: str,
+        body_md: str = "",
+        tags: list[str] | None = None,
+        actor: str = "",
+    ) -> WikiPage:
+        """Append a new revision of *slug* (rev = current max + 1) and return
+        it. Pages are append-only: like events, there is no update/delete API
+        and DB triggers enforce it even for raw SQL."""
+        if not slug or not slug.strip():
+            raise ValueError("wiki slug must be non-empty")
+        if not title or not title.strip():
+            raise ValueError("wiki title must be non-empty")
+        slug = slug.strip()
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(rev), 0) AS rev FROM wiki_pages WHERE slug = ?",
+            (slug,),
+        ).fetchone()
+        rev = int(row["rev"]) + 1
+        page_id = new_id("WP")
+        ts = _utcnow()
+        self._conn.execute(
+            """INSERT INTO wiki_pages (page_id, slug, rev, title, body_md,
+                                       tags, actor, ts)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                page_id,
+                slug,
+                rev,
+                title,
+                body_md,
+                json.dumps(list(tags or [])),
+                actor or "",
+                ts,
+            ),
+        )
+        self._conn.commit()
+        return WikiPage(
+            id=page_id, slug=slug, rev=rev, title=title, body_md=body_md,
+            tags=list(tags or []), actor=actor or "", ts=ts,
+        )
+
+    def get_page(self, slug: str) -> "WikiPage | None":
+        """Latest revision of *slug*, or None."""
+        row = self._conn.execute(
+            "SELECT * FROM wiki_pages WHERE slug = ? ORDER BY rev DESC LIMIT 1",
+            (slug,),
+        ).fetchone()
+        return self._row_to_page(row) if row else None
+
+    def list_pages(self) -> "list[WikiPage]":
+        """Latest revision per slug, ordered by slug."""
+        rows = self._conn.execute(
+            """SELECT w.* FROM wiki_pages w
+               JOIN (SELECT slug, MAX(rev) AS rev FROM wiki_pages GROUP BY slug) m
+                 ON m.slug = w.slug AND m.rev = w.rev
+               ORDER BY w.slug ASC"""
+        ).fetchall()
+        return [self._row_to_page(r) for r in rows]
+
+    def page_history(self, slug: str) -> "list[WikiPage]":
+        """All revisions of *slug*, oldest first."""
+        rows = self._conn.execute(
+            "SELECT * FROM wiki_pages WHERE slug = ? ORDER BY rev ASC",
+            (slug,),
+        ).fetchall()
+        return [self._row_to_page(r) for r in rows]
+
+    def search_pages(self, q: str) -> "list[WikiPage]":
+        """Latest revisions matching *q* (case-insensitive substring on
+        title, body, or tags), ordered by slug."""
+        like = f"%{q}%"
+        rows = self._conn.execute(
+            """SELECT w.* FROM wiki_pages w
+               JOIN (SELECT slug, MAX(rev) AS rev FROM wiki_pages GROUP BY slug) m
+                 ON m.slug = w.slug AND m.rev = w.rev
+               WHERE w.title LIKE ? OR w.body_md LIKE ? OR w.tags LIKE ?
+               ORDER BY w.slug ASC""",
+            (like, like, like),
+        ).fetchall()
+        return [self._row_to_page(r) for r in rows]
+
     # -- projections --------------------------------------------------------------
 
     def board(self) -> "dict[str, list[Ticket]]":
@@ -600,4 +711,16 @@ class Store:
         return Event(
             id=row["id"], ticket_id=row["ticket_id"], ts=row["ts"], actor=actor,
             kind=row["kind"], payload=json.loads(row["payload"]), seq=row["seq"],
+        )
+
+    def _row_to_page(self, row: sqlite3.Row) -> WikiPage:
+        return WikiPage(
+            id=row["page_id"],
+            slug=row["slug"],
+            rev=row["rev"],
+            title=row["title"],
+            body_md=row["body_md"],
+            tags=json.loads(row["tags"]),
+            actor=row["actor"],
+            ts=row["ts"],
         )

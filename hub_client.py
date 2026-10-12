@@ -167,6 +167,27 @@ class HubClient:
     def board(self) -> dict:
         return self._request("GET", "/board")
 
+    # -- wiki -----------------------------------------------------------------
+
+    def wiki_ls(self) -> list:
+        return self._request("GET", "/wiki")
+
+    def wiki_get(self, slug: str) -> dict:
+        return self._request("GET", f"/wiki/{urllib.parse.quote(slug)}")
+
+    def wiki_set(self, slug: str, title: str, body_md: str = "",
+                 tags: list[str] | None = None, actor=None) -> dict:
+        payload: dict = {"title": title, "body_md": body_md}
+        if tags:
+            payload["tags"] = list(tags)
+        if actor is not None:
+            payload["actor"] = actor
+        return self._request("POST", f"/wiki/{urllib.parse.quote(slug)}",
+                             body=payload)
+
+    def wiki_search(self, q: str) -> list:
+        return self._request("GET", "/wiki-search", params={"q": q})
+
     def plan(self, ticket_id: str) -> dict:
         return self._request("GET",
                              f"/tickets/{urllib.parse.quote(ticket_id)}/plan")

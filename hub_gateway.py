@@ -42,6 +42,20 @@ def _actor(raw: Any) -> Optional[Actor]:
     raise ValueError(f"cannot coerce actor: {raw!r}")
 
 
+def _actor_name(raw: Any) -> str:
+    """Coerce an actor (string, dict, Actor, or None) to a plain name for
+    the wiki_pages.actor column (audit label, like event actors)."""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict):
+        return str(raw.get("name") or raw.get("id") or "")
+    if isinstance(raw, Actor):
+        return raw.name
+    raise ValueError(f"cannot coerce actor name: {raw!r}")
+
+
 class StoreGateway:
     """Dict-surfacing facade over the real Store (contract: DESIGN.md)."""
 
@@ -113,6 +127,26 @@ class StoreGateway:
     def board(self) -> dict[str, list[dict]]:
         return {k: [_to_dict(t) for t in v]
                 for k, v in self._store.board().items()}
+
+    # -- wiki (DESIGN-v2 pillar 1) ------------------------------------------
+
+    def put_page(self, slug: str, *, title: str, body_md: str = "",
+                 tags: Optional[list] = None, actor: Any = None) -> dict:
+        return _to_dict(self._store.put_page(
+            slug, title=title, body_md=body_md,
+            tags=list(tags or []), actor=_actor_name(actor)))
+
+    def get_page(self, slug: str) -> Optional[dict]:
+        return _to_dict(self._store.get_page(slug))
+
+    def list_pages(self) -> list[dict]:
+        return [_to_dict(p) for p in self._store.list_pages()]
+
+    def page_history(self, slug: str) -> list[dict]:
+        return [_to_dict(p) for p in self._store.page_history(slug)]
+
+    def search_pages(self, q: str) -> list[dict]:
+        return [_to_dict(p) for p in self._store.search_pages(q)]
 
     def list_bindings(self, ticket_id: str) -> list[dict]:
         return [_to_dict(b) for b in self._store.bindings(ticket_id)]

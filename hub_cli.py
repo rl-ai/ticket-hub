@@ -241,6 +241,77 @@ def _cmd_done(hub: HubClient, args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Wiki commands
+# ---------------------------------------------------------------------------
+
+def wiki_line(p: dict) -> str:
+    tags = f"  [{','.join(p.get('tags') or [])}]" if p.get("tags") else ""
+    return f"{p['slug']}  r{p.get('rev', '?')}  {p.get('title', '')}{tags}"
+
+
+def _cmd_wiki_ls(hub: HubClient, args) -> int:
+    pages = hub.wiki_ls()
+    if args.json:
+        print(_dump(pages))
+    else:
+        for p in pages:
+            print(wiki_line(p))
+    return 0
+
+
+def _cmd_wiki_get(hub: HubClient, args) -> int:
+    result = hub.wiki_get(args.slug)
+    if args.json:
+        print(_dump(result))
+        return 0
+    page = result["page"]
+    print(f"# {page.get('title', '')}")
+    print(f"slug: {page['slug']}  rev: {page.get('rev')}  "
+          f"actor: {page.get('actor', '')}  ts: {page.get('ts', '')}")
+    if page.get("tags"):
+        print("tags: " + ", ".join(page["tags"]))
+    print()
+    print(page.get("body_md", ""))
+    return 0
+
+
+def _cmd_wiki_set(hub: HubClient, args) -> int:
+    if not args.title:
+        print("wiki set: --title is required", file=sys.stderr)
+        return 1
+    if args.body is not None and args.file is not None:
+        print("wiki set: give --body or --file, not both", file=sys.stderr)
+        return 1
+    body = args.body or ""
+    if args.file is not None:
+        try:
+            with open(args.file, encoding="utf-8") as fh:
+                body = fh.read()
+        except OSError as exc:
+            print(f"wiki set: cannot read {args.file}: {exc}",
+                  file=sys.stderr)
+            return 1
+    page = hub.wiki_set(args.slug, args.title, body, tags=args.tag or None,
+                        actor=args.actor)
+    print(wiki_line(page))
+    return 0
+
+
+def _cmd_wiki_search(hub: HubClient, args) -> int:
+    results = hub.wiki_search(args.query)
+    if args.json:
+        print(_dump(results))
+    else:
+        for r in results:
+            snippet = (r.get("snippet") or "").replace("\n", " ")
+            line = f"{r['slug']}  {r.get('title', '')}"
+            if snippet:
+                line += f"  — {snippet[:80]}"
+            print(line)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Parser / entry point
 # ---------------------------------------------------------------------------
 
@@ -347,6 +418,34 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("id")
     sp.add_argument("--actor", default=None)
     sp.set_defaults(func=_cmd_done)
+
+    # -- wiki (DESIGN-v2 pillar 1) ------------------------------------------
+    wiki = sub.add_parser("wiki", help="wiki pages (ls|get|set|search)")
+    wsub = wiki.add_subparsers(dest="wiki_command", required=True)
+
+    wsp = wsub.add_parser("ls", help="list pages (latest revision each)")
+    wsp.add_argument("--json", action="store_true")
+    wsp.set_defaults(func=_cmd_wiki_ls)
+
+    wsp = wsub.add_parser("get", help="show one page (with history)")
+    wsp.add_argument("slug")
+    wsp.add_argument("--json", action="store_true")
+    wsp.set_defaults(func=_cmd_wiki_get)
+
+    wsp = wsub.add_parser("set", help="append a new revision of a page")
+    wsp.add_argument("slug")
+    wsp.add_argument("--title", default=None)
+    wsp.add_argument("--body", default=None)
+    wsp.add_argument("--file", default=None,
+                     help="read body markdown from FILE (alternative to --body)")
+    wsp.add_argument("--tag", action="append", default=[])
+    wsp.add_argument("--actor", default=None)
+    wsp.set_defaults(func=_cmd_wiki_set)
+
+    wsp = wsub.add_parser("search", help="substring search title/body/tags")
+    wsp.add_argument("query")
+    wsp.add_argument("--json", action="store_true")
+    wsp.set_defaults(func=_cmd_wiki_search)
 
     return p
 
