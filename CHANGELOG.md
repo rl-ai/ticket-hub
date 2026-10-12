@@ -7,7 +7,7 @@ per-commit record).
 
 ## [Unreleased]
 
-### Added (v2 Mission Control — awaiting Ray acceptance)
+### Accepted (v2 Mission Control — accepted by Ray 2026-10-12)
 - Wiki: append-only pages (revisions like events), `/wiki*` API, `hub wiki` CLI, `[[WikiLink]]` renderer, seed corpus (repo docs + ops knowledge; re-import freshness; machine actor `seed-import`).
 - Mission Control UI: Board | Graph | Wiki | Monitoring | Admin | Roles.
 - `GET /admin/status` read-only aggregate (health, services, backups, maintenance, hygiene, counts); hygiene/maintenance emit machine status files.
