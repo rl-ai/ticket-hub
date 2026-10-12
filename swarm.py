@@ -168,12 +168,10 @@ class SwarmHarness:
 
     def _append(self, ticket_id: str, kind: str, payload: dict, actor: str):
         """Append an event; bounded retry on 'database is locked'."""
-        last_exc: "Exception | None" = None
         for attempt in range(MAX_APPEND_ATTEMPTS):
             try:
                 return self.hub.event(ticket_id, kind, payload, actor=actor)
             except HubError as exc:
-                last_exc = exc
                 if LOCKED_MARKER in (exc.message or "") and \
                         attempt < MAX_APPEND_ATTEMPTS - 1:
                     self.sleep(self.retry_delay_s)

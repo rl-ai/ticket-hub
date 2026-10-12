@@ -445,7 +445,7 @@ def create_app(store: Any = None) -> FastAPI:
             for line in out.splitlines():
                 cols = line.split("\t")
                 if len(cols) >= 3 and cols[2].startswith("com.ticket-hub."):
-                    pid, status, label = cols[0], cols[1], cols[2]
+                    pid, _state, label = cols[0], cols[1], cols[2]
                     services.append({
                         "label": label,
                         "loaded": True,

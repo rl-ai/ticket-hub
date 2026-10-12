@@ -185,9 +185,6 @@ class HubClient:
         return self._request("POST", f"/wiki/{urllib.parse.quote(slug)}",
                              body=payload)
 
-    def wiki_search(self, q: str) -> list:
-        return self._request("GET", "/wiki-search", params={"q": q})
-
     def plan(self, ticket_id: str) -> dict:
         return self._request("GET",
                              f"/tickets/{urllib.parse.quote(ticket_id)}/plan")
