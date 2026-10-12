@@ -265,6 +265,18 @@ def test_ui_served(client):
         assert r.status_code == 200, asset
 
 
+def test_ui_mission_control_nav(client):
+    """Mission Control shell: nav ids + view sections + new render functions."""
+    html = client.get("/").text
+    for nav_id in ("nav-wiki", "nav-monitoring", "nav-admin", "nav-roles"):
+        assert nav_id in html, nav_id
+    for view_id in ("view-wiki", "view-monitoring", "view-admin", "view-roles"):
+        assert view_id in html, view_id
+    js = client.get("/ui/app.js").text
+    for fn in ("renderWiki", "renderMonitoring", "renderAdmin", "renderRoles"):
+        assert fn in js, fn
+
+
 def test_validation_error_is_json(client):
     resp = client.post("/tickets", json={"body": "no title"})
     assert resp.status_code == 422
