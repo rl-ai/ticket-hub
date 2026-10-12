@@ -513,4 +513,6 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.environ.get("TICKET_HUB_PORT", "8777"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # Loopback-only posture (SECURITY.md); override only if you know why.
+    host = os.environ.get("TICKET_HUB_HOST", "127.0.0.1")
+    uvicorn.run(app, host=host, port=port)
