@@ -1,8 +1,8 @@
 """Slack adapter — thread_ts semantics inside a channel.
 
-Config section (in ``~/tp-data/ticket-hub/adapters.json``, never in repo)::
+Config section (in ``$TICKET_HUB_HOME/adapters.json``, never in repo)::
 
-    "slack": {"token": "xoxb-...", "user_map": {"U123": "Ray"}}
+    "slack": {"token": "xoxb-...", "user_map": {"U123": "Owner"}}
 
 No config file / no slack section / no token -> inert mode: posts recorded
 in ``self.outbox``, inbound still maps, zero network.

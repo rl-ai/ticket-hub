@@ -1,7 +1,7 @@
 # Contributing to ticket-hub
 
 Team process for humans and agents working on this repo. Acceptance and
-promotion authority belong to **Ray** — nothing below grants any agent
+promotion authority belong to **the owner** — nothing below grants any agent
 production or merge authority.
 
 ## Branch per ticket
@@ -10,7 +10,7 @@ production or merge authority.
   `hub-TK01ABC-deflate-digest`).
 - Branch from the integration branch (`hub`); keep branches short-lived and
   rebase rather than merge when they drift.
-- Never push to `main`. Merges into `main` are blocked by Ray until Ray accepts.
+- Never push to `main`. Merges into `main` are blocked by the owner until the owner accepts.
 
 ## Commits
 
@@ -52,15 +52,15 @@ updated **before** the code:
 If code and DESIGN disagree, that is a defect in one of them — file it;
 don't silently pick a side.
 
-## promotion blocked by Ray
+## promotion blocked by owner
 
 - `hub` branch: integration of reviewed lane work.
-- `main`: only by Ray, from an exact reviewed candidate (frozen commit).
-  Green tests and reviewer approval are inputs to Ray's decision, never a
+- `main`: only by the owner, from an exact reviewed candidate (frozen commit).
+  Green tests and reviewer approval are inputs to the owner's decision, never a
   substitute for it.
-- Anything awaiting Ray's sign-off — merge approval, production actions,
-  credential grants — is **Blocked by Ray** and must be visible as such in
-  the hub (status `blocked` and/or a `RAY-GATED` marker event on the
+- Anything awaiting the owner's sign-off — merge approval, production actions,
+  credential grants — is **Blocked by owner** and must be visible as such in
+  the hub (status `blocked` and/or an `OWNER-GATED` marker event on the
   ticket).
 
 ## House rules

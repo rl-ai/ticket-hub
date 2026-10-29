@@ -1,7 +1,7 @@
 # ticket-hub — centralized object-oriented ticket graph
 
 Status: v0 build (prod-rough by design; forge will harden).
-Owner: Ray. Acceptance: Ray only.
+Owner: the owner. Acceptance: the owner only.
 
 ## Purpose
 A centralized, object-oriented **context object per request** that multiple agents
@@ -20,7 +20,7 @@ A centralized, object-oriented **context object per request** that multiple agen
 ## Object model (package `ticket_hub`)
 
 ```
-Actor        id, name, family (str, e.g. "hermes", "forge", "ray"), kind (agent|human|system)
+Actor        id, name, family (str, e.g. "hermes", "forge", "alice"), kind (agent|human|system)
 Ticket       id (TK-<ulid>), title, body, status, priority, owner: Actor,
              tags, families[], external_refs{}, artifacts[], created_at, updated_at
 Status       Draft → Open → Running → Blocked → Review → Done, Cancelled
@@ -32,7 +32,7 @@ ThreadBinding ticket_id, platform (matrix|discord|slack), room_id, thread_id, ro
 ```
 
 Store: SQLite WAL, append-only events, `updated_at`/status denormalized on Ticket row.
-DB path: `~/tp-data/ticket-hub/hub.db` (local, never iCloud).
+DB path: `~/.ticket-hub/hub.db` (local, never iCloud).
 Graph queries: `children(t)`, `ancestry(t)`, `descendants(t)`, `related(t)`; cycles rejected.
 
 ### Projections (read models)
@@ -46,7 +46,7 @@ Deterministic-first, model-polish optional:
 1. Group events into update blocks (per day or per N events).
 2. Template pass maps event kinds to reader-facing sentences
    (status_changed → "advanced to Review"; artifact → "produced <name>";
-   decision/approval_receipt → "decision recorded / approved by Ray";
+   decision/approval_receipt → "decision recorded / approved by the owner";
    QUEUED FINDING / KNOWN-FAILS payloads → "known issue logged").
 3. Optional polish: one GLM call per digest ("product update voice, ≤3 bullets,
    no internal jargon"); template output is the fallback and the truth source.
@@ -71,7 +71,7 @@ Contract: `ChatAdapter.post_update(ticket, digest) -> msg_id`,
 - Outbound: on status_changed/decision/approval_receipt/artifact → post digest bullet.
 - Inbound replies become `thread_message` events with actor resolved by chat-id map.
 - v0 ships: interface + Matrix/Discord/Slack adapters behind config (tokens in
-  `~/tp-data/ticket-hub/adapters.json`, never in repo), and a `FakeAdapter` for tests.
+  `$TICKET_HUB_HOME/adapters.json`, never in repo), and a `FakeAdapter` for tests.
   No credentials committed; adapters are inert without config.
 
 ## UI (`ui/`, served at `/`)

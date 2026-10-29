@@ -33,7 +33,7 @@ cd "${REPO_DIR}"
 
 PYTHON="${TICKET_HUB_PYTHON:-}"
 if [ -z "${PYTHON}" ]; then
-    for cand in "${REPO_DIR}/../forge-venv/bin/python" "$(command -v python3 || true)"; do
+    for cand in "${TICKET_HUB_PYTHON:-}" "$(command -v python3 || true)"; do
         [ -x "${cand}" ] && PYTHON="${cand}" && break
     done
 fi
@@ -102,7 +102,7 @@ else
 fi
 
 # ---- 4. DB integrity -------------------------------------------------------
-DB="${TICKET_HUB_DB:-${HOME}/tp-data/ticket-hub/hub.db}"
+DB="${TICKET_HUB_DB:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/hub.db}"
 if [ -f "${DB}" ] && command -v sqlite3 >/dev/null 2>&1; then
     # integrity_check is a read-only PRAGMA; plain path (a WAL-mode DB with
     # no -shm beside it cannot be opened via ?mode=ro).
@@ -119,7 +119,7 @@ fi
 
 # ---- verdict ---------------------------------------------------------------
 # Machine-readable summary for GET /admin/status (Mission Control).
-HS="${TICKET_HUB_HYGIENE_STATUS:-$HOME/tp-data/ticket-hub/hygiene-status.json}"
+HS="${TICKET_HUB_HYGIENE_STATUS:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/hygiene-status.json}"
 mkdir -p "$(dirname "${HS}")" 2>/dev/null || true
 printf '%s' "{\"result\": \"$( [ "${FAILURES}" -eq 0 ] && echo PASS || echo FAIL )\", \"ts\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"failures\": ${FAILURES}}" \
     > "${HS}.tmp" 2>/dev/null && mv "${HS}.tmp" "${HS}" 2>/dev/null || true

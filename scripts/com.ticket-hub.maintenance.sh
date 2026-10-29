@@ -36,7 +36,7 @@ fi
 
 # prune is owned by backup.sh (keep 14); nothing extra here.
 # Machine-readable summary for GET /admin/status (Mission Control).
-STATUS_FILE="${TICKET_HUB_MAINT_STATUS:-$HOME/tp-data/ticket-hub/maintenance-status.json}"
+STATUS_FILE="${TICKET_HUB_MAINT_STATUS:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/maintenance-status.json}"
 mkdir -p "$(dirname "${STATUS_FILE}")" 2>/dev/null || true
 printf '%s' "{\"last_run\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"summary\": \"$( [ "${FAILURES}" -eq 0 ] && echo 'PASS' || echo "FAIL (${FAILURES} step(s))" )\", \"failures\": ${FAILURES}}" \
     > "${STATUS_FILE}.tmp" 2>/dev/null && mv "${STATUS_FILE}.tmp" "${STATUS_FILE}" 2>/dev/null || true

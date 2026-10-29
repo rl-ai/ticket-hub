@@ -37,7 +37,7 @@ def test_fake_posts_record_markdown_bullets():
 
 
 def test_fake_inbound_roundtrip_resolves_actor():
-    a = FakeAdapter(config={"fake": {"user_map": {"U1": "Ray"}}})
+    a = FakeAdapter(config={"fake": {"user_map": {"U1": "Owner"}}})
     a.register_mapping("TK-1", room_id="room-a", thread_id="th-1")
     event = a.on_inbound({"user_id": "U1", "text": "looks good",
                           "msg_id": "m9", "thread_id": "th-1",
@@ -45,7 +45,7 @@ def test_fake_inbound_roundtrip_resolves_actor():
                           "ticket_id": "TK-1"})
     assert event["kind"] == "thread_message"
     assert event["ticket_id"] == "TK-1"
-    assert event["actor"]["name"] == "Ray"
+    assert event["actor"]["name"] == "Owner"
     assert event["payload"]["body"] == "looks good"
     assert event["payload"]["msg_id"] == "m9"
 
@@ -200,38 +200,38 @@ def test_discord_child_creates_subthread_under_parent_root():
 
 def test_matrix_inbound_maps_thread_root_to_ticket():
     a = MatrixAdapter(config={"matrix": {"token": "t", "homeserver": "h",
-                                         "user_map": {"@ray:srv": "Ray"}}})
+                                         "user_map": {"@owner:srv": "Owner"}}})
     a.register_mapping("TK-1", room_id="!room", root_msg_id="$root")
     ev = a.on_inbound({"event_id": "$m1", "room_id": "!room",
-                       "sender": "@ray:srv", "origin_server_ts": 42,
+                       "sender": "@owner:srv", "origin_server_ts": 42,
                        "content": {"body": "yes",
                                    "m.relates_to": {"rel_type": "m.thread",
                                                     "event_id": "$root"}}})
     assert ev["ticket_id"] == "TK-1"
-    assert ev["actor"]["name"] == "Ray"
+    assert ev["actor"]["name"] == "Owner"
     assert ev["payload"]["thread_id"] == "$root"
 
 
 def test_discord_inbound_thread_channel_maps_to_ticket():
     a = DiscordAdapter(config={"discord": {"token": "t",
-                                           "user_map": {"777": "Ray"}}})
+                                           "user_map": {"777": "Owner"}}})
     a.register_mapping("TK-1", room_id="chan-1", thread_id="thr-1")
     ev = a.on_inbound({"id": "m1", "channel_id": "thr-1",
                        "author": {"id": "777"}, "content": "lgtm",
                        "timestamp": "t"})
     assert ev["ticket_id"] == "TK-1"
-    assert ev["actor"]["name"] == "Ray"
+    assert ev["actor"]["name"] == "Owner"
     assert ev["payload"]["body"] == "lgtm"
 
 
 def test_slack_inbound_thread_ts_maps_to_ticket():
     a = SlackAdapter(config={"slack": {"token": "t",
-                                       "user_map": {"U9": "Ray"}}})
+                                       "user_map": {"U9": "Owner"}}})
     a.register_mapping("TK-1", room_id="#chan", thread_id="17.0")
     ev = a.on_inbound({"type": "message", "channel": "#chan", "user": "U9",
                        "text": "approved", "ts": "18.1", "thread_ts": "17.0"})
     assert ev["ticket_id"] == "TK-1"
-    assert ev["actor"]["name"] == "Ray"
+    assert ev["actor"]["name"] == "Owner"
     assert ev["payload"]["thread_id"] == "17.0"
 
 
@@ -246,8 +246,8 @@ def test_unknown_chat_user_falls_back_to_raw_id():
 
 def test_default_config_path_is_runtime_home_not_repo():
     from ticket_hub.adapters.base import DEFAULT_CONFIG_PATH
-    assert DEFAULT_CONFIG_PATH.endswith(
-        os.path.join("tp-data", "ticket-hub", "adapters.json"))
+    from ticket_hub.paths import hub_path
+    assert DEFAULT_CONFIG_PATH == hub_path("adapters.json")
     assert "hub-adapters" not in DEFAULT_CONFIG_PATH
 
 

@@ -167,6 +167,31 @@ class HubClient:
     def board(self) -> dict:
         return self._request("GET", "/board")
 
+    def api_get(self, path: str):
+        return self._request("GET", path)
+
+    def api_post(self, path: str, body: dict):
+        return self._request("POST", path, body=body)
+
+    def seats(self) -> dict:
+        return self._request("GET", "/seats")
+
+    def assign(self, ticket_id: str, role: str,
+               seat: str | None = None,
+               actor: dict | None = None) -> dict:
+        body: dict = {"role": role, "actor": actor}
+        if seat:
+            body["seat"] = seat
+        return self._request("POST",
+                             f"/tickets/{urllib.parse.quote(ticket_id)}/assign",
+                             body=body)
+
+    def release(self, ticket_id: str,
+                actor: dict | None = None) -> dict:
+        return self._request(
+            "POST", f"/tickets/{urllib.parse.quote(ticket_id)}/release",
+            body={"actor": actor})
+
     # -- wiki -----------------------------------------------------------------
 
     def wiki_ls(self) -> list:
@@ -256,7 +281,7 @@ class HubClient:
             "ticket": ticket,
             "ancestors": lin.get("ancestry") or [],
             "plan": plan,
-            "blocked": (plan or {}).get("blocked_by_ray") or [],
+            "blocked": (plan or {}).get("blocked_by_owner") or [],
             "events": events[-15:],
             "threads": threads,
             "wiki_pages": wiki_pages,

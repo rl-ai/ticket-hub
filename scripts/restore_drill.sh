@@ -12,7 +12,7 @@
 # Exit: 0 DRILL PASS, 1 DRILL FAIL. Never writes to the live hub.db.
 set -uo pipefail
 
-DB_DIR="${TICKET_HUB_DIR:-$HOME/tp-data/ticket-hub}"
+DB_DIR="${TICKET_HUB_DIR:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}}"
 BACKUP_DIR="${BACKUP_DIR:-${DB_DIR}/backups}"
 SNAP="${1:-$(ls -1t "${BACKUP_DIR}"/hub-*.db 2>/dev/null | head -1)}"
 

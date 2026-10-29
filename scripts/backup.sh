@@ -2,12 +2,12 @@
 # backup.sh — hot-snapshot the hub DB with sqlite3 .backup (WAL-safe), verify
 # the copy, keep the last 14 backups.
 #
-#   DB:   ${TICKET_HUB_DB:-~/tp-data/ticket-hub/hub.db}  (source, read-only)
-#   OUT:  ${TICKET_HUB_BACKUP_DIR:-~/tp-data/ticket-hub/backups}/hub-YYYYmmdd-HHMMSS.db
+#   DB:   ${TICKET_HUB_DB:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/hub.db}  (source, read-only)
+#   OUT:  ${TICKET_HUB_BACKUP_DIR:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/backups}/hub-YYYYmmdd-HHMMSS.db
 set -euo pipefail
 
-DB="${TICKET_HUB_DB:-${HOME}/tp-data/ticket-hub/hub.db}"
-BACKUP_DIR="${TICKET_HUB_BACKUP_DIR:-${HOME}/tp-data/ticket-hub/backups}"
+DB="${TICKET_HUB_DB:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/hub.db}"
+BACKUP_DIR="${TICKET_HUB_BACKUP_DIR:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/backups}"
 KEEP=14
 
 command -v sqlite3 >/dev/null 2>&1 || { echo "FAIL  sqlite3 not found" >&2; exit 1; }

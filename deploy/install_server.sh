@@ -4,7 +4,7 @@
 # Renders deploy/com.ticket-hub.server.plist.template into
 #   ~/Library/LaunchAgents/com.ticket-hub.server.plist
 # (python path, repo paths, DB, port) and prints the EXACT launchctl command
-# for Ray to run. This script never loads the service itself — service
+# for the owner to run. This script never loads the service itself — service
 # control belongs to the user. Same style as install_outbound.sh.
 set -euo pipefail
 
@@ -13,10 +13,10 @@ REPO_DIR="$(cd "${DEPLOY_DIR}/.." && pwd)"
 TEMPLATE="${DEPLOY_DIR}/com.ticket-hub.server.plist.template"
 TARGET="${HOME}/Library/LaunchAgents/com.ticket-hub.server.plist"
 
-PYTHON="${TICKET_HUB_PYTHON:-${REPO_DIR}/../forge-venv/bin/python}"
-DB="${TICKET_HUB_DB:-${HOME}/tp-data/ticket-hub/hub.db}"
+PYTHON="${TICKET_HUB_PYTHON:-$(command -v python3)}"
+DB="${TICKET_HUB_DB:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/hub.db}"
 PORT="${TICKET_HUB_PORT:-8777}"
-LOG_DIR="${TICKET_HUB_SERVER_LOG_DIR:-${HOME}/tp-data/ticket-hub/logs}"
+LOG_DIR="${TICKET_HUB_SERVER_LOG_DIR:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/logs}"
 
 [ -f "${TEMPLATE}" ] || { echo "missing template: ${TEMPLATE}" >&2; exit 1; }
 [ -x "${PYTHON}" ] || { echo "python not executable: ${PYTHON} (set TICKET_HUB_PYTHON)" >&2; exit 1; }

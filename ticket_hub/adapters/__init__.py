@@ -1,7 +1,7 @@
 """Chat bridge adapters (DESIGN.md §Chat bridges).
 
 Tokens live only in the runtime config (default
-``~/tp-data/ticket-hub/adapters.json``) — never in this repo. All adapters
+``$TICKET_HUB_HOME/adapters.json``) — never in this repo. All adapters
 import and construct with zero credentials (inert mode).
 """
 

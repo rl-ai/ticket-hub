@@ -21,6 +21,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ticket_hub.paths import hub_home, hub_path
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 UI_DIR = os.path.join(APP_DIR, "ui")
 
@@ -33,9 +35,9 @@ def _canon_status(value: str) -> str:
     if v not in STATUSES:
         raise ValueError(f"Unknown status: {value}")
     return v
-EDGE_TYPES = {"parent_of", "blocks", "relates_to", "duplicate_of"}
-# Types that must stay acyclic in the graph.
-CYCLE_EDGE_TYPES = {"parent_of", "blocks"}
+from ticket_hub.model import EDGE_TYPES, gate_markers  # single source of truth: ticket_hub/model.py
+# Types that must stay acyclic in the graph. Graph edge types are NOT checked.
+CYCLE_EDGE_TYPES: set[str] = {"parent_of", "blocks"}
 EVENT_KINDS = {
     "created", "updated", "status_changed", "comment", "checkpoint",
     "decision", "approval_receipt", "artifact", "handoff",
@@ -168,6 +170,23 @@ class WikiPageCreate(BaseModel):
     actor: Optional[Any] = None
 
 
+class AssignCreate(BaseModel):
+    role: str
+    seat: Optional[str] = None
+    actor: Optional[Any] = None
+
+
+class ReleaseCreate(BaseModel):
+    actor: Optional[Any] = None
+
+
+class InstantiateCreate(BaseModel):
+    title: str
+    parent: Optional[str] = None
+    actor: Optional[Any] = None
+    assign: bool = True
+
+
 # --------------------------------------------------------------------------
 # App factory
 # --------------------------------------------------------------------------
@@ -188,10 +207,7 @@ def create_app(store: Any = None) -> FastAPI:
                     detail={"code": "store_unavailable",
                             "message": f"No store configured: {exc}"},
                 )
-            db_path = os.environ.get(
-                "TICKET_HUB_DB",
-                os.path.expanduser("~/tp-data/ticket-hub/hub.db"),
-            )
+            db_path = os.environ.get("TICKET_HUB_DB", hub_path("hub.db"))
             os.makedirs(os.path.dirname(db_path), exist_ok=True)
             app.state.store = StoreGateway(Store(db_path))
         return app.state.store
@@ -281,6 +297,11 @@ def create_app(store: Any = None) -> FastAPI:
                                         "message": "No fields to update"})
         actor = normalize_actor(req.actor)
         return get_store().patch(ticket_id, actor=actor, **fields)
+
+    @app.get("/tickets/{ticket_id}/events")
+    def list_events(ticket_id: str):
+        get_ticket_or_404(ticket_id)
+        return get_store().timeline(ticket_id)
 
     @app.post("/tickets/{ticket_id}/events", status_code=201)
     def append_event(ticket_id: str, req: EventCreate):
@@ -386,18 +407,22 @@ def create_app(store: Any = None) -> FastAPI:
         store = get_store()
         columns = store.board()
         child_counts = {}
+        parents = {}
         for status_tickets in columns.values():
             for t in status_tickets:
-                child_counts[t["id"]] = len(list(store.children(t["id"])))
-        return {"columns": columns, "child_counts": child_counts}
+                kids = list(store.children(t["id"]))
+                child_counts[t["id"]] = len(kids)
+                for k in kids:
+                    parents[k["id"]] = t["id"]
+        return {"columns": columns, "child_counts": child_counts,
+                "parents": parents}
 
     @app.get("/health")
     def health():
         """Last-known health written by scripts/healthcheck.sh (monitor
         surface per GLM review: a FAIL must be visible between checks)."""
-        path = os.environ.get(
-            "TICKET_HUB_HEALTH_STATUS",
-            os.path.expanduser("~/tp-data/ticket-hub/health-status.json"))
+        path = os.environ.get("TICKET_HUB_HEALTH_STATUS",
+                              hub_path("health-status.json"))
         try:
             with open(path, encoding="utf-8") as fh:
                 return json.load(fh)
@@ -415,9 +440,8 @@ def create_app(store: Any = None) -> FastAPI:
     @app.get("/admin/status")
     def admin_status():
         """Mission Control aggregate. Read-only: local files + launchctl
-        list (display-only; actions stay blocked by Ray)."""
-        hub_dir = os.environ.get(
-            "TICKET_HUB_DIR", os.path.expanduser("~/tp-data/ticket-hub"))
+        list (display-only; actions stay with the owner)."""
+        hub_dir = os.environ.get("TICKET_HUB_DIR", hub_home())
         store = get_store()
 
         counts = {}
@@ -487,7 +511,7 @@ def create_app(store: Any = None) -> FastAPI:
             or {"result": "unknown", "ts": None},
             "counts": counts,
             "db_path": hub_dir + "/hub.db",
-            "seats_note": "seat health: run remote-model-health (morpheus); "
+            "seats_note": "seat health: run remote-model-health; "
                           "not polled from the hub by design (loopback scope)",
         }
 
@@ -496,8 +520,8 @@ def create_app(store: Any = None) -> FastAPI:
         """Introspection view: what this ticket is about, progress, and
         what remains. Progress = descendant work items done vs open;
         remaining = unfinished children + latest 'remaining items' checkpoint
-        (checkpoint events may carry payload.remaining: [..]); blocked_by_ray
-        = open items flagged blocked/RAY-GATED (marker event or blocked
+        (checkpoint events may carry payload.remaining: [..]); blocked_by_owner
+        = open items flagged blocked/OWNER-GATED (marker event or blocked
         status)."""
         store = get_store()
         ticket = get_ticket_or_404(ticket_id)
@@ -505,13 +529,13 @@ def create_app(store: Any = None) -> FastAPI:
 
         def flag_blocked(t) -> bool:
             # Current state only: completed/cancelled items drop off even if
-            # they carry historical RAY-GATED marker events (GLM review).
+            # they carry historical OWNER-GATED marker events (GLM review).
             if t["status"] in ("done", "cancelled"):
                 return False
             if t["status"] == "blocked":
                 return True
             return any(
-                (e.get("payload") or {}).get("marker") == "RAY-GATED"
+                (e.get("payload") or {}).get("marker") in gate_markers()
                 for e in store.timeline(t["id"]))
 
         done = [t for t in descendants if t["status"] == "done"]
@@ -541,11 +565,83 @@ def create_app(store: Any = None) -> FastAPI:
                       "owner": (t.get("owner") or {}).get("name")}
                      for t in open_items],
                  "remaining_notes": remaining_notes[-1]["items"] if remaining_notes else [],
-                 "blocked_by_ray": [
+                 "blocked_by_owner": [
                      {"id": t["id"], "title": t["title"], "status": t["status"]}
                      for t in blocked],
                  "recent_activity": list(store.timeline(ticket_id))[-8:]}
         return brief
+
+    # ---- Seats / roles (DESIGN-v2: models assigned around tickets) --------
+
+    _seat_router: dict = {}
+
+    def get_seat_router():
+        if "r" not in _seat_router:
+            from seats import SeatRouter
+            _seat_router["r"] = SeatRouter(get_store())
+        return _seat_router["r"]
+
+    @app.get("/seats")
+    def get_seats():
+        return get_seat_router().roster()
+
+    @app.post("/tickets/{ticket_id}/assign", status_code=201)
+    def assign_seat(ticket_id: str, req: AssignCreate):
+        get_ticket_or_404(ticket_id)
+        from seats import SeatError
+        try:
+            return get_seat_router().assign(
+                ticket_id, role=req.role, seat=req.seat,
+                actor=normalize_actor(req.actor))
+        except SeatError as e:
+            raise HTTPException(status_code=409,
+                                detail={"code": e.code, "message": e.message})
+
+    @app.post("/tickets/{ticket_id}/release")
+    def release_seat(ticket_id: str, req: ReleaseCreate):
+        get_ticket_or_404(ticket_id)
+        return get_seat_router().release(ticket_id,
+                                         actor=normalize_actor(req.actor))
+
+    @app.get("/tickets/{ticket_id}/assignment")
+    def ticket_assignment(ticket_id: str):
+        get_ticket_or_404(ticket_id)
+        r = get_seat_router()
+        return {"ticket_id": ticket_id,
+                "holder": r.current_holder(ticket_id),
+                "contributors": sorted(r.contributors(ticket_id))}
+
+    # ---- Templates (workflow shapes) ---------------------------------------
+
+    @app.get("/templates")
+    def templates_list():
+        from templates import list_templates
+        return {"templates": [
+            {"name": t["name"], "description": t.get("description", ""),
+             "tags": t.get("tags", []), "steps": len(t.get("steps", [])),
+             "source": t.get("source", "repo")}
+            for t in list_templates()]}
+
+    @app.get("/templates/{name}")
+    def template_get(name: str):
+        from templates import _load_named, TemplateError
+        try:
+            return _load_named(name)
+        except TemplateError as e:
+            raise HTTPException(status_code=404,
+                                detail={"code": e.code, "message": e.message})
+
+    @app.post("/templates/{name}/instantiate", status_code=201)
+    def template_instantiate(name: str, req: InstantiateCreate):
+        from templates import instantiate, TemplateError
+        try:
+            return instantiate(get_store(), get_seat_router(), name,
+                               req.title, parent=req.parent,
+                               actor=normalize_actor(req.actor),
+                               assign=req.assign)
+        except TemplateError as e:
+            raise HTTPException(status_code=404,
+                                detail={"code": e.code, "message": e.message})
 
     # ---- Threads / chat bridges ------------------------------------------
 
@@ -708,6 +804,9 @@ def create_app(store: Any = None) -> FastAPI:
             detail={"code": "not_found",
                     "message": f"Role {role_id} not found"},
         )
+
+    from jobs_api import register_jobs_routes
+    register_jobs_routes(app, get_store)
 
     # ---- UI ----------------------------------------------------------------
 

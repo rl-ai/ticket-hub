@@ -36,12 +36,12 @@ def _new(cli, title="CLI ticket", **flags) -> str:
 # -- new / get / ls ----------------------------------------------------------
 
 def test_new_and_get_one_line(cli):
-    tid = _new(cli, "CLI one-liner", owner="ray")
+    tid = _new(cli, "CLI one-liner", owner="owner")
     code, out, err = cli("get", tid)
     assert code == 0, err
     line = out.strip()
     assert line.startswith(tid)
-    assert "draft" in line and "CLI one-liner" in line and "[ray]" in line
+    assert "draft" in line and "CLI one-liner" in line and "[owner]" in line
 
 
 def test_get_json_parses(cli):
@@ -76,7 +76,7 @@ def test_ls_bad_status_exit_1(cli):
 
 def test_set_status_and_illegal_transition_exit_1(cli):
     tid = _new(cli, "CLI set me")
-    code, out, err = cli("set", tid, "--status", "open", "--actor", "ray")
+    code, out, err = cli("set", tid, "--status", "open", "--actor", "owner")
     assert code == 0 and "open" in out, err
     code, out, err = cli("set", tid, "--status", "draft")  # illegal
     assert code == 1
@@ -91,7 +91,7 @@ def test_set_requires_a_field(cli):
 
 def test_comment(cli):
     tid = _new(cli, "CLI comment")
-    code, out, err = cli("comment", tid, "hello", "--actor", "ray")
+    code, out, err = cli("comment", tid, "hello", "--actor", "owner")
     assert code == 0, err
     assert "comment" in out
     code, out, _ = cli("get", tid, "--json")

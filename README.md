@@ -1,6 +1,6 @@
 # ticket-hub
 
-The graph work OS for Ray's multi-agent operation. Every request or project
+The graph work OS for a multi-agent operation. Every request or project
 is a typed ticket in one durable store; tickets form a graph (parent/child
 plans, blocks, relates_to, duplicate_of); every change is an **append-only
 immutable event**; humans see it in a browser UI, agents drive it from any
@@ -14,17 +14,17 @@ Three questions, always answerable:
 2. **How far along is it?** — `hub plan <ID>`: progress is children done vs
    total, computed from real statuses, never hand-claimed.
 3. **What's left?** — the same view: remaining children, hand-noted
-   remaining items, and a **Blocked by Ray** list (anything waiting on
-   Ray's approval — blocked status or a `RAY-GATED` marker event).
+   remaining items, and a **Blocked by owner** list (anything waiting on
+   the owner's approval — blocked status or an `OWNER-GATED` marker event).
 
 ## 60-second quickstart
 
 ```bash
-# 1. Start the server (SQLite at ~/tp-data/ticket-hub/hub.db, port 8777)
+# 1. Start the server (SQLite at ~/.ticket-hub/hub.db, port 8777)
 cd <repo> && python api.py            # UI at http://127.0.0.1:8777/
 
 # 2. Create the project ticket and its plan (children = work items)
-hub new "Ship the exporter" --owner ray --body "Export widget data nightly"
+hub new "Ship the exporter" --owner alice --body "Export widget data nightly"
 #   -> TK-01AAA...
 hub new "Write CSV writer" --parent TK-01AAA... --owner hermes
 hub new "Add retry logic"  --parent TK-01AAA... --owner hermes
@@ -43,7 +43,7 @@ hub plan TK-01AAA...
 
 The parent + children *is* the plan. No separate plan object: `hub plan` on
 the parent reads child statuses and reports percent done, what's left, and
-what is Blocked by Ray.
+what is Blocked by owner.
 
 ## Status model
 
@@ -84,6 +84,15 @@ One ticket = one chat thread root. `hub bind <ID> matrix <room> --thread
   dedupe so nothing ever reposts. Child tickets post under the parent's
   root.
 
+## What's inside
+
+- **UI views** — Board, Graph, Updates, Wiki, Jobs, Monitoring, Admin and Roles in one sidebar. The Board collapses children under their parent and filters by ticket-type chips.
+- **Seats / role assignment** — event-sourced assign and release (`POST /tickets/{id}/assign|release`, `GET /seats`), live seat health and least-loaded routing; `hub seats/assign/release`.
+- **Workflow templates** — seven shipped shapes (feature, bugfix, infra, spike, project, biz-opportunity, forge-cycle) plus your own overrides, with `{title}` substitution and per-step seat assignment; `hub templates/template/instantiate`.
+- **Graph edge vocabulary** — ten semantic edge types (about, derived-from, trained-on, …, same-as) next to the hierarchy edges; only `parent_of` and `blocks` are cycle-checked.
+- **Ticket events** — `GET /tickets/{id}/events` returns the full timeline, thread messages included.
+- **Jobs page** — scheduled jobs and agent runs report to `/jobs`, roll up to their feature and project tickets, and come back as a daily digest. For when you want to know which cron job died quietly at 3 a.m.
+
 ## Where to go next
 
 | Doc | Contents |
@@ -92,9 +101,9 @@ One ticket = one chat thread root. `hub bind <ID> matrix <room> --thread
 | [docs/CLI.md](docs/CLI.md) | Every `hub` verb, flags, `--json`, exit codes |
 | [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) | How an agent works a ticket end-to-end |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | Server runbook, outbound install, backup/restore |
-| [docs/TERMINOLOGY.md](docs/TERMINOLOGY.md) | promotion, seat, lane, cycle, digest, binding, Blocked by Ray |
+| [docs/TERMINOLOGY.md](docs/TERMINOLOGY.md) | promotion, seat, lane, cycle, digest, binding, Blocked by owner |
 | [DESIGN-v1.md](DESIGN-v1.md) | v1 definition, architecture, acceptance checklist |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Branch/commit/review process, promotion blocked by Ray |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Branch/commit/review process, promotion blocked by owner |
 | [SECURITY.md](SECURITY.md) | Security posture and report scope |
 
 ## Non-goals (v1)

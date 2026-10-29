@@ -18,6 +18,14 @@ REGISTRY_PATH = os.path.join(os.path.dirname(_HERE), "roles", "registry.json")
 EXPECTED_ROLES = {"design", "pmf", "code-design", "execution",
                   "measurement", "product-owner", "orchestrator"}
 
+
+def test_registry_has_the_core_charter_roles(registry):
+    # Core charters are required; other roles (e.g. service-manager,
+    # biz-dev) may be added without breaking this contract.
+    ids = [r["id"] for r in registry["roles"]]
+    assert EXPECTED_ROLES.issubset(set(ids))
+    assert len(ids) == len(set(ids)), "no duplicate role ids"
+
 REQUIRED_FIELDS = {
     "id": str,
     "mission": str,
@@ -48,12 +56,6 @@ def test_registry_top_level_shape(registry):
     assert isinstance(registry.get("roles"), list)
 
 
-def test_registry_has_exactly_the_seven_roles(registry):
-    ids = [r["id"] for r in registry["roles"]]
-    assert set(ids) == EXPECTED_ROLES
-    assert len(ids) == 7, "no duplicate role ids"
-
-
 def test_registry_each_charter_schema(registry):
     for role in registry["roles"]:
         for field, typ in REQUIRED_FIELDS.items():
@@ -75,7 +77,7 @@ def test_roles_index_serves_registry(client, registry):
     resp = client.get("/roles")
     assert resp.status_code == 200
     body = resp.json()
-    assert {r["id"] for r in body["roles"]} == EXPECTED_ROLES
+    assert EXPECTED_ROLES.issubset({r["id"] for r in body["roles"]})
 
 
 def test_roles_read_at_request_time(client, registry, tmp_path, monkeypatch):

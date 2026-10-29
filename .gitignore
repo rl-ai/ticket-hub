@@ -10,7 +10,7 @@ env/
 .DS_Store
 
 # logs & runtime database files (the hub DB lives outside the repo at
-# ~/tp-data/ticket-hub/hub.db; any local copy must never be committed)
+# $TICKET_HUB_HOME/hub.db; any local copy must never be committed)
 *.log
 hub.db*
 

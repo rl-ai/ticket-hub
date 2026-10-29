@@ -28,6 +28,7 @@ _REPO_ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _REPO_ROOT)
 
 from ticket_hub.store import Store  # noqa: E402
+from ticket_hub.paths import hub_path  # noqa: E402
 
 MACHINE_ACTOR = "seed-import"
 
@@ -90,9 +91,9 @@ integrated by the orchestrator, then gated.
    outbound + wiki) must be green before a candidate is offered.
 4. **Review** — reviewer must not be the author; GLM is the triggered
    reviewer gate for lane work (revise → author fixes → fresh re-review).
-5. **Promotion candidate** — the candidate is **Blocked by Ray**: only Ray
-   accepts or rejects. Green tests and reviewer approval never count as
-   acceptance. Such items carry a `RAY-GATED` marker event.
+5. **Promotion candidate** — the candidate is **Blocked by owner**: only the
+   owner accepts or rejects. Green tests and reviewer approval never count as
+   acceptance. Such items carry an `OWNER-GATED` marker event.
 6. **Rejection path** — a rejection starts a successor cycle from the same
    frozen snapshot plus rejection evidence; reviewed bytes are never
    patched in place.
@@ -105,7 +106,7 @@ See [[glossary]] for seat / lane / cycle / promotion definitions and
 """
 
     ops_runbook = """Day-1 operations for the hub host (macOS, launchd). All paths under
-`~/tp-data/ticket-hub/`; the hub itself serves `http://127.0.0.1:8777`
+`$TICKET_HUB_HOME/`; the hub itself serves `http://127.0.0.1:8777`
 (loopback-only).
 
 ## Services (LaunchAgents)
@@ -116,7 +117,7 @@ See [[glossary]] for seat / lane / cycle / promotion definitions and
 | `com.ticket-hub.outbound` | `outbound.py` digest poller | `deploy/install_outbound.sh` |
 | `com.ticket-hub.maintenance` | `scripts/com.ticket-hub.maintenance.sh` | `deploy/install_maintenance.sh` |
 
-Inspect / control (host mutations stay Ray's; scripts print commands,
+Inspect / control (host mutations stay the owner's; scripts print commands,
 never run them):
 
 ```bash
@@ -127,7 +128,7 @@ launchctl kickstart -k gui/$(id -u)/com.ticket-hub.server
 
 ## Logs
 
-`~/tp-data/ticket-hub/logs/` (server/outbound stdout+stderr per install
+`$TICKET_HUB_HOME/logs/` (server/outbound stdout+stderr per install
 script). Tail the last lines before debugging anything.
 
 ## Healthcheck
@@ -146,7 +147,7 @@ curl -s http://127.0.0.1:8777/health
 
 `scripts/backup.sh` — WAL-safe `sqlite3 .backup` hot snapshot of `hub.db`,
 `PRAGMA integrity_check` on the copy, keeps the newest 14 in
-`~/tp-data/ticket-hub/backups/`. Run at least daily (the maintenance job
+`$TICKET_HUB_HOME/backups/`. Run at least daily (the maintenance job
 does); backup age budget is 26h.
 
 ## Restore drill
@@ -177,7 +178,7 @@ what authority it has (see [[glossary]]).
   candidates ([[forge-loop]]).
 - **glm** — the triggered reviewer seat: reviews lane work at interval
   boundaries; it is not the fallback worker for every task.
-- **ray** — human. Acceptance and promotion authority live here only.
+- **the owner** — human. Acceptance and promotion authority live here only.
 
 ## Tooling
 
@@ -190,7 +191,7 @@ posture as the hub itself ([[security]]).
 
 - Secrets never enter the repo, the hub DB, wiki pages, prompts, or logs.
 - Runtime config with credentials lives outside the repo, chmod 600
-  (e.g. `~/tp-data/ticket-hub/adapters.json`).
+  (e.g. `$TICKET_HUB_HOME/adapters.json`).
 - Bearer keys are read at call time from the file named by the
   `..._KEY_FILE` variable; never logged, never copied into tickets.
 - Docs and examples use placeholders (`<token>`, `example.invalid`) and
@@ -217,11 +218,13 @@ operation-level neighbors.)
 - **Binding** — a ThreadBinding linking one ticket to one chat thread
   (platform + room + thread + root message). Inbound replies become
   `thread_message` events; outbound posts digests.
-- **Blocked by Ray** — keep verbatim, this exact phrase: anything awaiting
-  Ray's approval or action (status `blocked` and/or a `RAY-GATED` marker
-  event — the legacy marker string stays because events are append-only).
+- **Blocked by owner** — keep verbatim, this exact phrase: anything awaiting
+  the owner's approval or action (status `blocked` and/or an `OWNER-GATED`
+  marker event — marker values stored under the old name stay as-is, since
+  events are append-only, and remain queryable via
+  `TICKET_HUB_EXTRA_GATE_MARKERS`).
   `hub plan` lists them. Blocked ≠ stale.
-- **Promotion** — advancing a build into main/prod. Only Ray does it.
+- **Promotion** — advancing a build into main/prod. Only the owner does it.
   Green tests, reviewer approval, or agent consensus never count.
 - **Snapshot** — a frozen, hash-bound state of the build used as the exact
   reviewable/rejectable artifact; rejections fork successors from it.
@@ -236,9 +239,9 @@ history; this page is the map, not the record.
 
 | Date | Decision | Where |
 |---|---|---|
-| 2026-10-12 | **ticket-hub v1 accepted by Ray** — the hub becomes the go-forward work OS (GLM review PASS-CONDITIONAL, blockers closed). Acceptance authority: Ray only. | [[changelog]], [[design-v1]] |
+| 2026-10-12 | **ticket-hub v1 accepted by the owner** — the hub becomes the go-forward work OS (GLM review PASS-CONDITIONAL, blockers closed). Acceptance authority: the owner only. | [[changelog]], [[design-v1]] |
 | 2026-10-12 | **v2 scope set** — four pillars: wiki knowledge layer, Mission Control shell, roles & swarms, fit services. Wiki ships first. | [[design-v2]] |
-| 2026-10-11 | **Legacy ledger frozen** — the flat pre-hub tickets ledger was migrated once (37 tickets, 33 edges, 236 events with timestamps/actors/ray-gating preserved, idempotent by legacy ids) and is now read-only history. All new work goes through the hub. | `scripts/migrate_legacy_ledger.py` |
+| 2026-10-11 | **Legacy ledger frozen** — the flat pre-hub tickets ledger was migrated once (37 tickets, 33 edges, 236 events with timestamps/actors/owner-gating preserved, idempotent by legacy ids) and is now read-only history. All new work goes through the hub. | one-time migration (script retired) |
 | 2026-10-11 | **Loopback-only posture** — hub serves 127.0.0.1:8777 only; no auth in v1 by design (single-user machine); remote exposure requires bearer-per-actor first. | [[security]] |
 | 2026-10-11 | **Append-only everywhere** — events and wiki revisions are immutable at the DB trigger level; corrections are new entries, never edits. | [[design-v1]], [[terminology]] |
 | 2026-10-11 | **Reviewer ≠ author** — GLM is the triggered review gate; a revise verdict loops back to the author and gets a fresh re-review. | [[contributing]], [[forge-loop]] |
@@ -302,12 +305,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Seed/refresh the hub wiki from repo docs + ops knowledge")
     ap.add_argument("--db", default=None,
                     help="hub DB path (default: $TICKET_HUB_DB or "
-                         "~/tp-data/ticket-hub/hub.db)")
+                         "$TICKET_HUB_HOME/hub.db)")
     ap.add_argument("--repo", default=_REPO_ROOT,
                     help="repo root for source docs")
     args = ap.parse_args(argv)
-    db = args.db or os.environ.get(
-        "TICKET_HUB_DB", os.path.expanduser("~/tp-data/ticket-hub/hub.db"))
+    db = args.db or os.environ.get("TICKET_HUB_DB", hub_path("hub.db"))
     store = Store(db)
     try:
         for rec in seed(store, args.repo):

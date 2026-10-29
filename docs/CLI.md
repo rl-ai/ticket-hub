@@ -60,8 +60,8 @@ output format:
 $ hub event TK-01ROOT… checkpoint --json '{"remaining": ["backfill dry-run"]}'
 EV-01ABC…  checkpoint  on TK-01ROOT…
 ```
-To flag something for Ray: `hub event ID decision --json
-'{"marker": "RAY-GATED", "note": "awaiting approval"}'`.
+To flag something for the owner: `hub event ID decision --json
+'{"marker": "OWNER-GATED", "note": "awaiting approval"}'`.
 
 ### `hub link SRC DST TYPE`
 Add an edge: `parent_of | blocks | relates_to | duplicate_of`. Cycle-guarded:
@@ -84,7 +84,7 @@ TK-01ROOT…  [running]  Ship the exporter
 
   progress  [###############.......] 60%  (3/5 done)
 
-  BLOCKED BY RAY (1):
+  BLOCKED BY OWNER (1):
     ! TK-01XYZ…  [blocked]  Approve production credentials
 
   REMAINING (2):
@@ -104,7 +104,7 @@ Default: plain-text bullets on stdout.
 Tickets grouped by status column, with child counts:
 ```
 == running (2) ==
-TK-01ABC…  running  Ship the exporter  [ray]  (5 children)
+TK-01ABC…  running  Ship the exporter  [alice]  (5 children)
 ```
 
 ### `hub bind ID PLATFORM ROOM [--THREAD T] [--ROOT MSG]`
@@ -120,6 +120,123 @@ Move to `running`, hopping legally through `open` if the ticket is `draft`.
 ### `hub done ID [--actor A]`
 Move to `done`, hopping legally through `open`/`review` as needed
 (e.g. `running → review → done`).
+
+### `hub packet ID [--json]`
+Print a complete shared packet for one agent: ticket, ancestors, plan, blocked tickets, recent events, threads, and related wiki pages. `--json` prints the raw packet instead of the sectioned text.
+
+```
+$ hub packet TK-EXAMPLE
+== PACKET: TK-EXAMPLE [running] Ship the exporter ==
+owner: alice
+tags: export
+
+-- ticket body --
+  Export widget data nightly
+
+-- plan --
+  progress 60% (3/5 done)
+  - TK-EXAMPLE  [open]  Wire the exporter
+
+-- blocked (1) --
+  ! TK-EXAMPLE  [blocked]  Approve production credentials
+
+-- last 1 events --
+  2026-10-11T02:05:00  alice: checkpoint
+
+-- threads (1) --
+  matrix  room=!room:example.invalid  thread=$rootmsg
+
+-- related wiki pages (1) --
+  [[export-notes]]  Export notes
+```
+
+### `hub seats [--json]`
+Show the seat roster: health, load, licensed roles, and open assignments. `--json` prints the raw roster.
+
+```
+$ hub seats
+SEAT                 HEALTH  LOAD  ROLES
+  seat-a              up      0     builder
+
+OPEN ASSIGNMENTS (1):
+  TK-EXAMPLE  seat-a@builder  [running]  Ship the exporter
+```
+
+### `hub templates [--json]`
+List workflow templates. `--json` prints the raw template list.
+
+```
+$ hub templates
+  example-flow      [repo] 4 steps  — Cut a release with review and handoff
+```
+
+### `hub template NAME`
+Show one template as JSON.
+
+```
+$ hub template example-flow
+{ "name": "example-flow", "steps": [ … ] }
+```
+
+### `hub instantiate NAME TITLE [--parent ID] [--actor-name NAME] [--no-assign]`
+Create a ticket subtree from a template, auto-assigning seats per step. `--no-assign` creates tickets without seat assignment; `--actor-name` defaults to `$HUB_ACTOR` (else the OS user).
+
+```
+$ hub instantiate example-flow "Nightly export"
+root: TK-EXAMPLE  Nightly export
+```
+
+### `hub assign ID ROLE [--seat SEAT] [--actor-name NAME]`
+Assign a role (and optionally a seat licensed for the role) to a ticket. `--actor-name` defaults to `$HUB_ACTOR` (else the OS user).
+
+```
+$ hub assign TK-EXAMPLE builder --seat seat-a
+TK-EXAMPLE  ->  seat-a  (builder, …)  EV-EXAMPLE
+```
+
+### `hub release ID [--actor-name NAME]`
+Release a ticket's current holder. `--actor-name` defaults to `$HUB_ACTOR` (else the OS user).
+
+```
+$ hub release TK-EXAMPLE
+TK-EXAMPLE  released  seat-a@builder
+```
+
+### `hub wiki ls [--json]`
+List wiki pages, latest revision each. `--json` prints the raw list.
+
+```
+$ hub wiki ls
+export-notes  r3  Export notes  [export]
+```
+
+### `hub wiki get SLUG [--json]`
+Show one wiki page. `--json` prints the full result.
+
+```
+$ hub wiki get export-notes
+# Export notes
+slug: export-notes  rev: 3  actor: alice  ts: 2026-10-11T02:05:00
+tags: export
+
+Export widget data nightly.
+```
+
+### `hub wiki set SLUG --title TITLE [--body B] [--file FILE] [--tag TAG]… [--actor A]`
+Append a new revision of a page. `--title` is required; give `--body` or `--file`, not both.
+
+```
+$ hub wiki set export-notes --title "Export notes" --body "Export widget data nightly." --tag export
+export-notes  r4  Export notes  [export]
+```
+
+### `hub wiki search QUERY [--json]`
+Substring search over page title, body, and tags. `--json` prints the raw results.
+
+```
+$ hub wiki search export
+export-notes  Export notes  — Export widget data nightly.
+```
 
 ## Scripting pattern
 

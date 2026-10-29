@@ -1,9 +1,9 @@
 """Discord adapter — thread per ticket, created under a parent root message.
 
-Config section (in ``~/tp-data/ticket-hub/adapters.json``, never in repo)::
+Config section (in ``$TICKET_HUB_HOME/adapters.json``, never in repo)::
 
     "discord": {"token": "...", "guild_id": "...",
-                "user_map": {"123": "Ray"}}
+                "user_map": {"123": "Owner"}}
 
 No config file / no discord section / no token -> inert mode: posts recorded
 in ``self.outbox``, inbound still maps, zero network.

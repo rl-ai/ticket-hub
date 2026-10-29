@@ -1,6 +1,6 @@
 """Matrix adapter (Element) — thread semantics: reply to the thread root event.
 
-Config section (in ``~/tp-data/ticket-hub/adapters.json``, never in repo)::
+Config section (in ``$TICKET_HUB_HOME/adapters.json``, never in repo)::
 
     "matrix": {"token": "...", "homeserver": "https://matrix.example",
                "user_map": {"@alice:example": "Alice"}}

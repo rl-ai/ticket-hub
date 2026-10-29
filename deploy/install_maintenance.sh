@@ -4,7 +4,7 @@
 # Renders deploy/com.ticket-hub.maintenance.plist.template into
 #   ~/Library/LaunchAgents/com.ticket-hub.maintenance.plist
 # (daily backup + quick hygiene + prune) and prints the EXACT launchctl
-# command for Ray to run. This script never loads the service itself —
+# command for the owner to run. This script never loads the service itself —
 # service control belongs to the user. Same style as install_outbound.sh.
 set -euo pipefail
 
@@ -13,11 +13,11 @@ REPO_DIR="$(cd "${DEPLOY_DIR}/.." && pwd)"
 TEMPLATE="${DEPLOY_DIR}/com.ticket-hub.maintenance.plist.template"
 TARGET="${HOME}/Library/LaunchAgents/com.ticket-hub.maintenance.plist"
 
-PYTHON="${TICKET_HUB_PYTHON:-${REPO_DIR}/../forge-venv/bin/python}"
-DB="${TICKET_HUB_DB:-${HOME}/tp-data/ticket-hub/hub.db}"
+PYTHON="${TICKET_HUB_PYTHON:-$(command -v python3)}"
+DB="${TICKET_HUB_DB:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/hub.db}"
 HUB_URL="${TICKET_HUB_URL:-http://127.0.0.1:8777}"
 DAILY_HOUR="${TICKET_HUB_MAINTENANCE_HOUR:-3}"
-LOG_DIR="${TICKET_HUB_MAINTENANCE_LOG_DIR:-${HOME}/tp-data/ticket-hub/logs}"
+LOG_DIR="${TICKET_HUB_MAINTENANCE_LOG_DIR:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/logs}"
 
 [ -f "${TEMPLATE}" ] || { echo "missing template: ${TEMPLATE}" >&2; exit 1; }
 [ -x "${REPO_DIR}/scripts/com.ticket-hub.maintenance.sh" ] || { echo "maintenance script not executable: ${REPO_DIR}/scripts/com.ticket-hub.maintenance.sh" >&2; exit 1; }

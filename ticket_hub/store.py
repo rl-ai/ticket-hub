@@ -14,6 +14,8 @@ import sqlite3
 from datetime import datetime, timezone
 
 from .model import (
+    EDGE_TYPES,
+    GRAPH_EDGE_TYPES,
     Actor,
     Edge,
     Event,
@@ -346,7 +348,7 @@ class Store:
     # -- edges / graph --------------------------------------------------------
 
     def _insert_edge(self, src: str, dst: str, type: str, meta: dict | None = None) -> Edge:
-        if type not in {"parent_of", "blocks", "relates_to", "duplicate_of"}:
+        if type not in EDGE_TYPES:
             raise ValueError(f"unknown edge type: {type!r}")
         self._require_ticket(src)
         self._require_ticket(dst)
@@ -459,16 +461,19 @@ class Store:
         return out
 
     def related(self, ticket_id: str) -> "list[Ticket]":
-        """Tickets joined by non-hierarchy edges (blocks/relates_to/duplicate_of),
-        either direction, deduplicated."""
+        """Tickets joined by non-hierarchy edges (blocks/relates_to/duplicate_of
+        plus the GRAPH_EDGE_TYPES semantic links), either direction,
+        deduplicated."""
         self._require_ticket(ticket_id)
+        types = ("blocks", "relates_to", "duplicate_of") + tuple(sorted(GRAPH_EDGE_TYPES))
+        placeholders = ", ".join("?" for _ in types)
         rows = self._conn.execute(
             "SELECT t.* FROM edges e JOIN tickets t "
             "  ON t.id = CASE WHEN e.src = ? THEN e.dst ELSE e.src END "
             "WHERE (e.src = ? OR e.dst = ?) "
-            "  AND e.type IN ('blocks', 'relates_to', 'duplicate_of') "
+            f"  AND e.type IN ({placeholders}) "
             "ORDER BY e.created_at, e.rowid",
-            (ticket_id, ticket_id, ticket_id),
+            (ticket_id, ticket_id, ticket_id, *types),
         ).fetchall()
         seen: set[str] = set()
         out: list[Ticket] = []

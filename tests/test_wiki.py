@@ -54,10 +54,10 @@ def store(tmp_path):
 
 def test_put_get_roundtrip(store):
     p = store.put_page("runbook", "Runbook", "body text",
-                       tags=["ops", "docs"], actor="ray")
+                       tags=["ops", "docs"], actor="owner")
     assert p.id.startswith("WP-")
     assert p.slug == "runbook" and p.rev == 1
-    assert p.tags == ["ops", "docs"] and p.actor == "ray"
+    assert p.tags == ["ops", "docs"] and p.actor == "owner"
     got = store.get_page("runbook")
     assert got == p
     assert store.get_page("nope") is None
@@ -67,7 +67,7 @@ def test_put_get_roundtrip(store):
 
 
 def test_rev_increments_and_history(store):
-    store.put_page("ops", "Ops v1", "one", actor="ray")
+    store.put_page("ops", "Ops v1", "one", actor="owner")
     p2 = store.put_page("ops", "Ops v2", "two", actor="hermes")
     p3 = store.put_page("ops", "Ops v3", "three", actor="glm")
     assert [p.rev for p in (p2, p3)] == [2, 3]
@@ -90,9 +90,9 @@ def test_list_pages_latest_per_slug(store):
 
 def test_search_pages_case_insensitive_substring(store):
     store.put_page("alpha", "Alpha Plan", "nothing special",
-                   tags=["build"], actor="ray")
-    store.put_page("beta", "Beta", "mentions the FORGE loop here", actor="ray")
-    store.put_page("gamma", "Gamma", "plain", tags=["FORGE-tag"], actor="ray")
+                   tags=["build"], actor="owner")
+    store.put_page("beta", "Beta", "mentions the FORGE loop here", actor="owner")
+    store.put_page("gamma", "Gamma", "plain", tags=["FORGE-tag"], actor="owner")
     assert {p.slug for p in store.search_pages("alpha")} == {"alpha"}
     assert {p.slug for p in store.search_pages("FORGE")} == {"beta", "gamma"}
     assert store.search_pages("zzz-nothing") == []
@@ -168,7 +168,7 @@ def test_api_endpoints_via_gateway(gw_client):
     assert miss.json()["error"]["code"] == "not_found"
     # create rev 1
     r = _post(c, "guide", {"title": "Guide", "body_md": "rev one body",
-                           "tags": ["docs"], "actor": "ray"})
+                           "tags": ["docs"], "actor": "owner"})
     assert r.status_code == 201, r.text
     assert r.json()["rev"] == 1
     # index entry
@@ -212,13 +212,13 @@ def test_api_endpoints_via_fake_store():
 def test_cli_wiki_set_get_roundtrip(cli):
     code, out, err = cli("wiki", "set", "cli-page", "--title", "CLI Page",
                          "--body", "hello wiki", "--tag", "cli",
-                         "--actor", "ray")
+                         "--actor", "owner")
     assert code == 0, err
     assert "cli-page" in out and "r1" in out
     # get human view shows body + actor
     code, out, err = cli("wiki", "get", "cli-page")
     assert code == 0, err
-    assert "hello wiki" in out and "actor: ray" in out
+    assert "hello wiki" in out and "actor: owner" in out
     # get --json includes slim history
     code, out, _ = cli("wiki", "get", "cli-page", "--json")
     detail = out and __import__("json").loads(out)

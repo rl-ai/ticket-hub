@@ -30,7 +30,7 @@ Top nav: **Board | Graph | Wiki | Monitoring | Admin | Roles**.
   file (written by maintenance job from remote-model-health).
 - Admin: DB counts (tickets/edges/events/wiki), last hygiene result,
   exact load/unload/install commands for every LaunchAgent (display-only
-  — host mutations stay Ray's), log tail viewer (last 200 lines, allow-
+  — host mutations stay the owner's), log tail viewer (last 200 lines, allow-
   listed paths).
 - `GET /admin/status` returns all of the above as JSON (one call per
   page); reads local state only, no shell-outs beyond `launchctl list`.
@@ -39,7 +39,7 @@ Top nav: **Board | Graph | Wiki | Monitoring | Admin | Roles**.
 Role registry `roles/registry.json`, one file per role charter:
 - **design** — UX/interaction quality bar for anything user-facing.
 - **pmf** — product-market-fit challenge: who wants this, why now,
-  what would make Ray stop using it.
+  what would make the owner stop using it.
 - **code-design** — architecture review: contracts, edges, failure
   modes; distinct from execution.
 - **execution** — builders; the swarm's bulk. Pull assigned tickets,
@@ -66,12 +66,12 @@ blocked), recent events, linked wiki pages. One command, one artifact.
 ### 4. Fit services (low effort, high glue value)
 - Weekly digest job: maintenance agent can emit `hub digest` for active
   roots to the bound thread + wiki "Weekly" page (append revision).
-- Inbox view: `hub ls --status blocked` + blocked_by_ray across roots,
+- Inbox view: `hub ls --status blocked` + blocked_by_owner across roots,
   first thing on the Mission Control landing.
 
 ## Non-negotiables (unchanged)
 loopback-only; secrets never in hub/repo/prompts; append-only; installers
-and admin print commands, never run them; promotion blocked by Ray;
+and admin print commands, never run them; promotion blocked by owner;
 reviewer ≠ author; GLM plans/reviews at interval boundaries, DS-style
 critic advisory where available.
 
@@ -84,4 +84,4 @@ critic advisory where available.
    FakeAdapter patterns) (+ roles page data).
 API contract frozen before dispatch (see sections above). Integration:
 orchestrator merges, runs full board + hygiene, GLM review, push both
-remotes. Acceptance stays blocked by Ray.
+remotes. Acceptance stays blocked by owner.

@@ -13,7 +13,9 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
+import os
 import sys
 from typing import Any
 
@@ -21,6 +23,11 @@ from hub_client import HubClient, HubError
 
 STATUS_ORDER = ["draft", "open", "running", "blocked", "review", "done",
                 "cancelled"]
+
+
+def _actor_name(args) -> str:
+    return (args.actor_name or os.environ.get("HUB_ACTOR")
+            or getpass.getuser())
 
 
 # ---------------------------------------------------------------------------
@@ -123,9 +130,9 @@ def _cmd_plan(hub: HubClient, args) -> int:
     filled = int(bar_w * p["percent"] / 100)
     print(f"  progress  [{'#' * filled}{'.' * (bar_w - filled)}] "
           f"{p['percent']}%  ({p['done']}/{p['total']} done)")
-    if plan["blocked_by_ray"]:
-        print(f"\n  BLOCKED BY RAY ({len(plan['blocked_by_ray'])}):")
-        for b in plan["blocked_by_ray"][:10]:
+    if plan["blocked_by_owner"]:
+        print(f"\n  BLOCKED BY OWNER ({len(plan['blocked_by_owner'])}):")
+        for b in plan["blocked_by_owner"][:10]:
             print(f"    ! {b['id']}  [{b['status']}]  {b['title']}")
     if plan["remaining_items"]:
         print(f"\n  REMAINING ({len(plan['remaining_items'])}):")
@@ -231,6 +238,79 @@ def _cmd_packet(hub: HubClient, args) -> int:
     for pg in pages[:10]:
         slug = pg.get("slug") or pg.get("id") or "?"
         print(f"  [[{slug}]]  {pg.get('title', '')}")
+    return 0
+
+
+def _cmd_seats(hub: HubClient, args) -> int:
+    roster = hub.seats()
+    if args.json:
+        print(_dump(roster))
+        return 0
+    seats = roster.get("seats", {})
+    if seats:
+        print("SEAT                 HEALTH  LOAD  ROLES")
+        for name, s in sorted(seats.items()):
+            print(f"  {name:<18}  {s['health']:<6}  {s['load']:<4}  "
+                  f"{', '.join(s['roles'])}")
+    assignments = roster.get("assignments", [])
+    if assignments:
+        print(f"\nOPEN ASSIGNMENTS ({len(assignments)}):")
+        for a in assignments:
+            print(f"  {a['ticket_id']}  {a['seat']}@{a['role']}  "
+                  f"[{a['status']}]  {a['title'][:50]}")
+    if not seats and not assignments:
+        print("no seats registered / no open assignments")
+    return 0
+
+
+def _cmd_assign(hub: HubClient, args) -> int:
+    res = hub.assign(args.id, args.role, seat=args.seat,
+                     actor={"name": _actor_name(args)})
+    print(f"{res['ticket_id']}  ->  {res['seat']}  ({res['role']}, "
+          f"{res['authority']})  {res['event_id']}")
+    return 0
+
+
+def _cmd_release(hub: HubClient, args) -> int:
+    res = hub.release(args.id, actor={"name": _actor_name(args)})
+    rel = res.get("released") or {}
+    print(f"{res['ticket_id']}  released  "
+          f"{rel.get('seat', '?')}@{rel.get('role', '?')}")
+    return 0
+
+
+def _cmd_templates(hub: HubClient, args) -> int:
+    data = hub.api_get("/templates")
+    if args.json:
+        print(_dump(data))
+        return 0
+    for t in data.get("templates", []):
+        print(f"  {t['name']:<18} [{t['source']}] {t['steps']} steps  "
+              f"— {t['description'][:60]}")
+    return 0
+
+
+def _cmd_template(hub: HubClient, args) -> int:
+    t = hub.api_get(f"/templates/{args.name}")
+    print(_dump(t))
+    return 0
+
+
+def _cmd_instantiate(hub: HubClient, args) -> int:
+    res = hub.api_post("/templates/%s/instantiate" % args.name,
+                   {"title": args.title, "parent": args.parent,
+                    "actor": {"name": _actor_name(args)},
+                    "assign": not args.no_assign})
+    root = res["root"]
+    print(f"root: {root['id']}  {root['title']}")
+
+    def walk(nodes, depth=1):
+        for n in nodes:
+            mark = n["assigned"] or (f"!{n['assign_error']}"
+                                     if n.get("assign_error") else "-")
+            print("  " * (depth + 1) + f"{n['id']}  [{mark}]  {n['title']}")
+            walk(n.get("children", []), depth + 1)
+    walk(res["tree"])
     return 0
 
 
@@ -460,6 +540,46 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("board", help="tickets grouped by status")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=_cmd_board)
+
+    sp = sub.add_parser("seats",
+                        help="seat roster: health, load, licensed roles, "
+                             "open assignments")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=_cmd_seats)
+
+    sp = sub.add_parser("templates", help="list workflow templates")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=_cmd_templates)
+
+    sp = sub.add_parser("template", help="show one template (JSON)")
+    sp.add_argument("name")
+    sp.set_defaults(func=_cmd_template)
+
+    sp = sub.add_parser("instantiate",
+                        help="create a ticket subtree from a template, "
+                             "auto-assigning seats per step")
+    sp.add_argument("name")
+    sp.add_argument("title")
+    sp.add_argument("--parent", help="attach the root under a project id")
+    sp.add_argument("--actor-name", default=None)
+    sp.add_argument("--no-assign", action="store_true",
+                    help="create tickets without seat assignment")
+    sp.set_defaults(func=_cmd_instantiate)
+
+    sp = sub.add_parser("assign",
+                        help="assign a role (and optionally a seat) to a "
+                             "ticket")
+    sp.add_argument("id")
+    sp.add_argument("role")
+    sp.add_argument("--seat", help="pin a specific seat (must be licensed "
+                                   "for the role)")
+    sp.add_argument("--actor-name", default=None)
+    sp.set_defaults(func=_cmd_assign)
+
+    sp = sub.add_parser("release", help="release a ticket's current holder")
+    sp.add_argument("id")
+    sp.add_argument("--actor-name", default=None)
+    sp.set_defaults(func=_cmd_release)
 
     sp = sub.add_parser("bind", help="bind a chat thread to a ticket")
     sp.add_argument("id")

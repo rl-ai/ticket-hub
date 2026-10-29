@@ -6,7 +6,7 @@ Contract:
     ChatAdapter.register_mapping(...)          # ThreadBinding: ticket <-> thread
 
 Security: tokens live only in the runtime config file (default
-``~/tp-data/ticket-hub/adapters.json``), never in the repo. An adapter whose
+``$TICKET_HUB_HOME/adapters.json``), never in the repo. An adapter whose
 config file (or platform section, or token) is absent constructs in **inert
 mode**: it records outbound posts in ``self.outbox`` and maps inbound events,
 but performs no network I/O and needs no credentials.
@@ -18,9 +18,9 @@ import json
 import os
 import urllib.request
 
-DEFAULT_CONFIG_PATH = os.path.join(
-    os.path.expanduser("~"), "tp-data", "ticket-hub", "adapters.json"
-)
+from ticket_hub.paths import hub_path
+
+DEFAULT_CONFIG_PATH = hub_path("adapters.json")
 
 __all__ = ["ChatAdapter", "DEFAULT_CONFIG_PATH"]
 

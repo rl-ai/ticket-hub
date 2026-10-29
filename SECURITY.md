@@ -14,7 +14,7 @@ excluded service.
 
 There is no authentication or per-actor identity on the HTTP API. This is
 deliberate, not an oversight: v1's threat model is a single-user machine
-where every consumer is either Ray or an agent Ray runs on that host.
+where every consumer is either the owner or an agent the owner runs on that host.
 Actor attribution (`owner`/`actor` fields) exists for **audit trail**, not
 access control — it records who claimed to do what; it does not verify it.
 Network auth is deferred until a non-loopback consumer exists; when it
@@ -26,7 +26,7 @@ Adding remote exposure without that auth is out of policy.
 Secrets never enter the repo, the database, prompts, or logs:
 
 - **Chat tokens** live only in the runtime config
-  (`~/tp-data/ticket-hub/adapters.json`, chmod 600), outside the repo.
+  (`$TICKET_HUB_HOME/adapters.json`, chmod 600), outside the repo.
   Adapters construct inert with zero credentials; an absent platform
   section means no network I/O.
 - **Polish bearer key** (optional GLM pass) lives in the file named by
@@ -75,5 +75,5 @@ Please report:
   handling.
 
 Out of scope: attacks requiring local filesystem access to `hub.db`, the
-config file, or the host (same trust domain); social engineering of Ray;
+config file, or the host (same trust domain); social engineering of the owner;
 issues in upstream chat platforms themselves.

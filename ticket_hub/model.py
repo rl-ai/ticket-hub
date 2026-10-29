@@ -83,7 +83,26 @@ def assert_transition(frm: Status, to: Status) -> None:
 # Edge / event / platform vocabularies
 # ---------------------------------------------------------------------------
 
-EDGE_TYPES: frozenset[str] = frozenset({"parent_of", "blocks", "relates_to", "duplicate_of"})
+# Typed semantic links between tickets. Not cycle-checked.
+GRAPH_EDGE_TYPES: frozenset[str] = frozenset(
+    {
+        "about",
+        "derived-from",
+        "trained-on",
+        "introduces",
+        "implements",
+        "provides",
+        "seen-in",
+        "addresses",
+        "measured-by",
+        "same-as",
+    }
+)
+
+# Single source of truth for all edge types (hierarchy/blocking + graph).
+EDGE_TYPES: frozenset[str] = frozenset(
+    {"parent_of", "blocks", "relates_to", "duplicate_of"}
+) | GRAPH_EDGE_TYPES
 
 EVENT_KINDS: frozenset[str] = frozenset(
     {
@@ -105,6 +124,14 @@ PLATFORMS: frozenset[str] = frozenset({"matrix", "discord", "slack"})
 
 ACTOR_KINDS: frozenset[str] = frozenset({"agent", "human", "system"})
 
+GATE_MARKER = "OWNER-GATED"
+
+
+def gate_markers() -> frozenset[str]:
+    """OWNER-GATED plus any extra (legacy) markers from env TICKET_HUB_EXTRA_GATE_MARKERS (comma list)."""
+    extra = os.environ.get("TICKET_HUB_EXTRA_GATE_MARKERS", "")
+    return frozenset({GATE_MARKER} | {m.strip() for m in extra.split(",") if m.strip()})
+
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -115,7 +142,7 @@ ACTOR_KINDS: frozenset[str] = frozenset({"agent", "human", "system"})
 class Actor:
     id: str
     name: str
-    family: str = "unknown"  # e.g. "hermes", "forge", "ray"
+    family: str = "unknown"  # e.g. "hermes", "forge", "owner"
     kind: str = "agent"  # agent | human | system
 
     def __post_init__(self) -> None:
@@ -166,7 +193,7 @@ class Edge:
     id: str
     src: str  # ticket id
     dst: str  # ticket id
-    type: str  # parent_of | blocks | relates_to | duplicate_of
+    type: str  # EDGE_TYPES member: parent_of | blocks | relates_to | duplicate_of | graph types (GRAPH_EDGE_TYPES)
     meta: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:

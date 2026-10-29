@@ -14,7 +14,7 @@ from ticket_hub import (
     lineage_dict,
 )
 
-RAY = Actor(id="a-ray", name="Ray", family="ray", kind="human")
+OWNER = Actor(id="a-owner", name="Owner", family="owner", kind="human")
 HERMES = Actor(id="a-hermes", name="Hermes", family="hermes", kind="agent")
 FORGE = Actor(id="a-forge", name="Forge", family="forge", kind="agent")
 
@@ -30,10 +30,10 @@ def store(tmp_path):
 
 
 def test_create_and_get_ticket(store):
-    t = store.create_ticket("Ship v0", "body text", owner=RAY, tags=["launch"])
+    t = store.create_ticket("Ship v0", "body text", owner=OWNER, tags=["launch"])
     assert t.id.startswith("TK-")
     assert t.status is Status.DRAFT
-    assert t.owner.id == "a-ray"
+    assert t.owner.id == "a-owner"
     assert t.tags == ["launch"]
     got = store.get_ticket(t.id)
     assert got == t
@@ -45,7 +45,7 @@ def test_get_missing_ticket_returns_none(store):
 
 def test_create_missing_parent_raises(store):
     with pytest.raises(KeyError):
-        store.create_ticket("orphan", parent="TK-does-not-exist", owner=RAY)
+        store.create_ticket("orphan", parent="TK-does-not-exist", owner=OWNER)
 
 
 def test_update_ticket_bumps_status_and_denormalized_row(store):
@@ -58,9 +58,9 @@ def test_update_ticket_bumps_status_and_denormalized_row(store):
 
 
 def test_illegal_transition_rejected(store):
-    t = store.create_ticket("w", owner=RAY)  # draft
+    t = store.create_ticket("w", owner=OWNER)  # draft
     with pytest.raises(ValueError):
-        store.update_ticket(t.id, status="done", actor=RAY)
+        store.update_ticket(t.id, status="done", actor=OWNER)
     # draft stays put
     assert store.get_ticket(t.id).status is Status.DRAFT
 
@@ -74,20 +74,20 @@ def test_transition_table_shape():
 
 
 def test_update_emits_updated_event(store):
-    t = store.create_ticket("w", owner=RAY)
-    store.update_ticket(t.id, title="w2", actor=RAY)
+    t = store.create_ticket("w", owner=OWNER)
+    store.update_ticket(t.id, title="w2", actor=OWNER)
     kinds = [e.kind for e in store.events(t.id)]
     assert kinds == ["created", "updated"]
 
 
 def test_unknown_event_kind_rejected(store):
-    t = store.create_ticket("w", owner=RAY)
+    t = store.create_ticket("w", owner=OWNER)
     with pytest.raises(ValueError):
         store.append_event(t.id, "not_a_kind")
 
 
 def test_append_event_roundtrip(store):
-    t = store.create_ticket("w", owner=RAY)
+    t = store.create_ticket("w", owner=OWNER)
     ev = store.append_event(t.id, "comment", actor=HERMES, payload={"text": "hi"})
     assert ev.id.startswith("EV-")
     assert ev.ticket_id == t.id
@@ -101,7 +101,7 @@ def test_append_event_roundtrip(store):
 
 
 def _three_levels(store):
-    root = store.create_ticket("root", owner=RAY)
+    root = store.create_ticket("root", owner=OWNER)
     mid = store.create_ticket("mid", parent=root.id, owner=HERMES)
     leaf = store.create_ticket("leaf", parent=mid.id, owner=FORGE)
     return root, mid, leaf
@@ -136,13 +136,13 @@ def test_cycle_rejected_on_create_parent(store):
 
 def test_second_parent_rejected(store):
     root, mid, leaf = _three_levels(store)
-    other = store.create_ticket("other", owner=RAY)
+    other = store.create_ticket("other", owner=OWNER)
     with pytest.raises(ValueError):
         store.add_edge(other.id, mid.id, "parent_of")
 
 
 def test_non_hierarchy_edges_and_related(store):
-    a = store.create_ticket("a", owner=RAY)
+    a = store.create_ticket("a", owner=OWNER)
     b = store.create_ticket("b", owner=HERMES)
     c = store.create_ticket("c", owner=FORGE)
     store.add_edge(a.id, b.id, "blocks")
@@ -156,6 +156,14 @@ def test_non_hierarchy_edges_and_related(store):
         store.add_edge(a.id, b.id, "nonsense")  # unknown type
 
 
+def test_related_includes_graph_edge_types(store):
+    a = store.create_ticket("a", owner=OWNER)
+    b = store.create_ticket("b", owner=HERMES)
+    store.add_edge(a.id, b.id, "derived-from")
+    assert b.id in {t.id for t in store.related(a.id)}
+    assert a.id in {t.id for t in store.related(b.id)}  # either direction
+
+
 # -------------------------------------------------- event immutability ----
 
 
@@ -165,7 +173,7 @@ def test_no_event_mutation_api(store):
 
 
 def test_db_triggers_block_event_update_delete(store):
-    store.create_ticket("w", owner=RAY)
+    store.create_ticket("w", owner=OWNER)
     raw = sqlite3.connect(store.db_path)
     with pytest.raises(sqlite3.IntegrityError):
         raw.execute("UPDATE events SET payload = '{}'")
@@ -196,9 +204,9 @@ def test_lineage_projection(store):
 
 
 def test_events_ordered_by_seq(store):
-    t = store.create_ticket("w", owner=RAY)
+    t = store.create_ticket("w", owner=OWNER)
     for i in range(5):
-        store.append_event(t.id, "checkpoint", actor=RAY, payload={"i": i})
+        store.append_event(t.id, "checkpoint", actor=OWNER, payload={"i": i})
     evs = store.events(t.id)
     assert [e.payload.get("i") for e in evs[1:]] == [0, 1, 2, 3, 4]
     assert evs == sorted(evs, key=lambda e: (e.ts, e.seq))
@@ -230,7 +238,7 @@ def test_family_filter_includes_declared_families(store):
 
 
 def test_bind_thread_and_timeline(store):
-    a = store.create_ticket("parent conv", owner=RAY)
+    a = store.create_ticket("parent conv", owner=OWNER)
     child = store.create_ticket("child conv", parent=a.id, owner=HERMES)
     store.bind_thread(a.id, "matrix", "!room:ex", thread_id="$thread", root_msg_id="$root")
     store.bind_thread(child.id, "matrix", "!room:ex", thread_id="$thread")
@@ -255,8 +263,8 @@ def test_wal_mode_enabled(store):
 
 
 def test_board_grouping(store):
-    t = store.create_ticket("w", owner=RAY)
-    store.update_ticket(t.id, status="open", actor=RAY)
+    t = store.create_ticket("w", owner=OWNER)
+    store.update_ticket(t.id, status="open", actor=OWNER)
     board = store.board()
     assert [x.id for x in board["open"]] == [t.id]
     assert board["done"] == []

@@ -13,7 +13,7 @@
     },
     {
       "id": "pmf",
-      "mission": "Relentless product-market-fit challenge: who wants this, why now, and what would make Ray stop using it. Says no more often than yes.",
+      "mission": "Relentless product-market-fit challenge: who wants this, why now, and what would make the owner stop using it. Says no more often than yes.",
       "quality_bar": "Names a concrete user and a trigger scenario in the ticket. Any feature without a pull (a real workflow that breaks without it) gets a kill recommendation, politely and with receipts.",
       "inputs": ["ticket packet", "recent digest / changelog", "user-visible diffs only (not internals)"],
       "outputs": ["pmf verdict comment: keep / kill / reshape", "the one sentence a user would say about this feature, or proof none exists"],

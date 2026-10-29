@@ -3,7 +3,7 @@
 # Checks: GET /board responds within timeout and the board has >0 tickets.
 #   URL: ${TICKET_HUB_URL:-http://127.0.0.1:8777}
 # Side effect: writes last-known health to
-#   ${TICKET_HUB_HEALTH_STATUS:-~/tp-data/ticket-hub/health-status.json}
+#   ${TICKET_HUB_HEALTH_STATUS:-$TICKET_HUB_HOME/health-status.json}
 #   so the hub's /health endpoint and any monitor can surface failures
 #   between checks (GLM review requirement: a FAIL must be visible).
 # Exit: 0 ok, 1 FAIL.
@@ -11,7 +11,7 @@ set -uo pipefail
 
 URL="${TICKET_HUB_URL:-http://127.0.0.1:8777}"
 TIMEOUT="${TICKET_HUB_HEALTHCHECK_TIMEOUT:-5}"
-STATUS_FILE="${TICKET_HUB_HEALTH_STATUS:-$HOME/tp-data/ticket-hub/health-status.json}"
+STATUS_FILE="${TICKET_HUB_HEALTH_STATUS:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/health-status.json}"
 TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 write_status() {  # $1 ok|fail  $2 tickets  $3 error(json or null)

@@ -5,20 +5,21 @@ terms verbatim in tickets, docs, and reports.
 
 ## Promotion
 
-Advancing a build or ticket into `main` / prod. Only Ray can do it —
+Advancing a build or ticket into `main` / prod. Only the owner can do it —
 nothing else (green tests, reviewer approval, agent consensus) counts.
-Promotion is therefore always **blocked by Ray** until Ray explicitly
-accepts. In the hub such items carry a `{"marker": "RAY-GATED"}` event —
-that exact string is a legacy DB field value that cannot be renamed
-(append-only events) — so promotion state stays queryable, not folklore.
+Promotion is therefore always **blocked by owner** until the owner explicitly
+accepts. In the hub such items carry a `{"marker": "OWNER-GATED"}` event
+(events are append-only; marker values stored before the rename stay as-is and
+remain queryable via `TICKET_HUB_EXTRA_GATE_MARKERS`) — so promotion state
+stays queryable, not folklore.
 
-## Blocked by Ray
+## Blocked by owner
 
-The user's term for anything currently awaiting Ray's approval or action —
+The user's term for anything currently awaiting the owner's approval or action —
 keep it verbatim (this exact phrase) in UI, CLI, and docs. Mechanically: a
-ticket with status `blocked`, or carrying a `RAY-GATED` marker event,
+ticket with status `blocked`, or carrying an `OWNER-GATED` marker event,
 inside a project's subtree; `hub plan` lists them under
-`blocked_by_ray` / "BLOCKED BY RAY". Blocked ≠ stale: it names a specific
+`blocked_by_owner` / "BLOCKED BY OWNER". Blocked ≠ stale: it names a specific
 waiting-on-a-person state with a stated reason.
 
 ## Seat
@@ -39,7 +40,7 @@ green before the candidate ships.
 ## Cycle
 
 One iteration of the forge build loop: pick work → build in lanes → test
-board → review → promotion candidate → blocked by Ray: accept/reject → next
+board → review → promotion candidate → blocked by owner: accept/reject → next
 cycle. A rejection starts the successor cycle from the same frozen
 snapshot plus rejection evidence; it never patches reviewed bytes.
 

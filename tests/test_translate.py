@@ -35,10 +35,10 @@ def test_status_changed_done_and_blocked():
 
 def test_comment_quotes_body_and_actor():
     d = template_pass(events=[
-        ev("e1", "comment", actor={"name": "Ray"}, body="ship it"),
+        ev("e1", "comment", actor={"name": "Owner"}, body="ship it"),
     ])
     text = d["bullets"][0]["text"]
-    assert "Ray" in text and "ship it" in text
+    assert "Owner" in text and "ship it" in text
 
 
 def test_checkpoint_and_decision():
@@ -52,9 +52,9 @@ def test_checkpoint_and_decision():
 
 def test_approval_receipt_names_approver():
     d = template_pass(events=[
-        ev("e1", "approval_receipt", approved_by="Ray"),
+        ev("e1", "approval_receipt", approved_by="Owner"),
     ])
-    assert d["bullets"][0]["text"] == "Approved by Ray."
+    assert d["bullets"][0]["text"] == "Approved by Owner."
 
 
 def test_artifact_produced_name():
@@ -101,7 +101,7 @@ def test_every_bullet_cites_existing_event_ids():
 
 def test_no_fabrication_all_events_cited_exactly_once():
     events = [ev(f"e{n}", "comment", body=f"m{n}") for n in range(5)]
-    events.append(ev("z", "approval_receipt", approved_by="Ray"))
+    events.append(ev("z", "approval_receipt", approved_by="Owner"))
     d = template_pass(events=events)
     cited = [i for b in d["bullets"] for i in b["event_ids"]]
     assert sorted(cited) == sorted(e["id"] for e in events)

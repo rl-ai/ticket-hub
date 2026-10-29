@@ -1,5 +1,6 @@
 """Lane B API tests against the FakeStore contract (runs standalone)."""
 
+import json
 import os
 import sys
 
@@ -30,7 +31,7 @@ def _create(client, title, **kw):
 # ---- tickets ---------------------------------------------------------------
 
 def test_create_ticket(client):
-    t = _create(client, "Parent ticket", owner={"name": "ray", "family": "ray",
+    t = _create(client, "Parent ticket", owner={"name": "owner", "family": "owner",
                                                 "kind": "human"}, tags=["core"])
     assert t["id"].startswith("TK-")
     assert t["status"] == "draft"
@@ -141,6 +142,32 @@ def test_edge_missing_dst_404(client):
     assert resp.status_code == 404
 
 
+def test_graph_edge_types_created(client):
+    a = _create(client, "A")
+    b = _create(client, "B")
+    for ttype in ("about", "same-as"):
+        resp = client.post(f"/tickets/{a['id']}/edges",
+                           json={"type": ttype, "dst": b["id"]})
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["type"] == ttype
+    # Unknown types are still rejected.
+    bad = client.post(f"/tickets/{a['id']}/edges",
+                      json={"type": "bogus", "dst": b["id"]})
+    assert bad.status_code == 400
+
+
+def test_graph_edge_loop_allowed(client):
+    # Graph edge types are not cycle-checked: A about B and B about A both fine.
+    a = _create(client, "A")
+    b = _create(client, "B")
+    r1 = client.post(f"/tickets/{a['id']}/edges",
+                     json={"type": "about", "dst": b["id"]})
+    r2 = client.post(f"/tickets/{b['id']}/edges",
+                     json={"type": "about", "dst": a["id"]})
+    assert r1.status_code == 201, r1.text
+    assert r2.status_code == 201, r2.text
+
+
 # ---- digest ------------------------------------------------------------------
 
 def test_digest_structured_bullets_cite_event_ids(client):
@@ -152,10 +179,10 @@ def test_digest_structured_bullets_cite_event_ids(client):
         "kind": "artifact", "actor": {"name": "forge"},
         "payload": {"name": "snapshot tarball"}}).json()
     ev_appr = client.post(f"/tickets/{child['id']}/events", json={
-        "kind": "approval_receipt", "actor": {"name": "ray", "family": "ray"},
-        "payload": {"approver": "Ray"}}).json()
+        "kind": "approval_receipt", "actor": {"name": "owner", "family": "owner"},
+        "payload": {"approver": "Owner"}}).json()
     ev_dec = client.post(f"/tickets/{child['id']}/events", json={
-        "kind": "decision", "actor": {"name": "ray"},
+        "kind": "decision", "actor": {"name": "owner"},
         "payload": {"text": "ship v0"}}).json()
     ev_known = client.post(f"/tickets/{parent['id']}/events", json={
         "kind": "comment", "actor": {"name": "forge"},
@@ -168,7 +195,7 @@ def test_digest_structured_bullets_cite_event_ids(client):
     texts = [b["text"] for b in digest["bullets"]]
     assert "advanced to Review" in texts
     assert "produced snapshot tarball" in texts
-    assert "approved by Ray" in texts
+    assert "approved by Owner" in texts
     assert "decision recorded" in texts
     assert "known issue logged" in texts
     # Every bullet cites at least one real event id, and cited ids cover the
@@ -216,6 +243,16 @@ def test_board_columns(client):
     assert [t["id"] for t in board["columns"]["open"]] == [b["id"]]
 
 
+def test_board_parents_map(client):
+    a = _create(client, "ParentOfBoard")
+    b = _create(client, "ChildOfBoard")
+    client.post(f"/tickets/{a['id']}/edges",
+                json={"dst": b["id"], "type": "parent_of"})
+    board = client.get("/board").json()
+    assert board["parents"][b["id"]] == a["id"]
+    assert board["child_counts"][a["id"]] == 1
+
+
 # ---- thread binding / inbound --------------------------------------------------
 
 def test_bind_thread(client):
@@ -239,7 +276,7 @@ def test_inbound_creates_thread_message_event(client):
                       "thread_id": "thr-1"})
     resp = client.post("/adapters/discord/inbound", json={
         "room_id": "chan-1", "thread_id": "thr-1",
-        "actor": {"name": "ray", "family": "ray", "kind": "human"},
+        "actor": {"name": "owner", "family": "owner", "kind": "human"},
         "text": "looks good, ship it"})
     assert resp.status_code == 200
     event = resp.json()["event"]
@@ -301,7 +338,42 @@ def test_plan_endpoint(client):
     assert plan["progress"]["total"] == 3
     assert plan["progress"]["done"] == 1
     assert {i["id"] for i in plan["remaining_items"]} == {b["id"], c["id"]}
-    assert {i["id"] for i in plan["blocked_by_ray"]} == {c["id"]}
+    assert {i["id"] for i in plan["blocked_by_owner"]} == {c["id"]}
+
+
+def _add_marker_child(client, root, title, marker):
+    kid = _create(client, title)
+    r = client.post(f"/tickets/{root['id']}/edges",
+                    json={"dst": kid["id"], "type": "parent_of"})
+    assert r.status_code == 201, r.text
+    r = client.post(f"/tickets/{kid['id']}/events",
+                    json={"kind": "checkpoint", "payload": {"marker": marker}})
+    assert r.status_code == 201, r.text
+    return kid
+
+
+def _blocked_ids(client, root):
+    plan = client.get(f"/tickets/{root['id']}/plan").json()
+    return {i["id"] for i in plan["blocked_by_owner"]}
+
+
+def test_plan_owner_gated_marker_blocks(client):
+    root = _create(client, "Gated root")
+    kid = _add_marker_child(client, root, "Owner-gated child", "OWNER-GATED")
+    assert _blocked_ids(client, root) == {kid["id"]}
+
+
+def test_plan_legacy_gate_marker_with_env(client, monkeypatch):
+    monkeypatch.setenv("TICKET_HUB_EXTRA_GATE_MARKERS", "LEGACY-GATED")
+    root = _create(client, "Legacy root")
+    kid = _add_marker_child(client, root, "Legacy-gated child", "LEGACY-GATED")
+    assert _blocked_ids(client, root) == {kid["id"]}
+
+
+def test_plan_legacy_gate_marker_without_env(client):
+    root = _create(client, "Legacy root")
+    _add_marker_child(client, root, "Legacy-gated child", "LEGACY-GATED")
+    assert _blocked_ids(client, root) == set()
 
 
 def test_admin_status_aggregate(client, tmp_path, monkeypatch):
@@ -320,3 +392,73 @@ def test_admin_status_aggregate(client, tmp_path, monkeypatch):
     assert body["maintenance"]["last_run"] is None
     assert isinstance(body["services"], list)
     assert body["db_path"].endswith("hub.db")
+
+
+ASSIGN_REG = {
+    "version": 1,
+    "roles": [
+        {"id": "execution", "mission": "m", "quality_bar": "q",
+         "inputs": ["i"], "outputs": ["o"], "seat_pref": "s",
+         "default_model_hint": "x", "max_parallel": 2,
+         "seats": ["w1", "w2"]},
+        {"id": "product-owner", "mission": "m", "quality_bar": "q",
+         "inputs": ["i"], "outputs": ["o"], "seat_pref": "s",
+         "default_model_hint": "x", "max_parallel": 1,
+         "seats": ["w1"]},
+    ],
+}
+
+
+def _assign_client(tmp_path, monkeypatch):
+    reg = tmp_path / "roles.json"
+    reg.write_text(json.dumps(ASSIGN_REG))
+    monkeypatch.setenv("TICKET_HUB_ROLES", str(reg))
+    monkeypatch.setenv("TICKET_HUB_SEATS_CMD", "true")  # health unknown
+    return TestClient(create_app(store=FakeStore()))
+
+
+def test_assign_release_flow(tmp_path, monkeypatch):
+    client = _assign_client(tmp_path, monkeypatch)
+    tid = client.post("/tickets", json={"title": "assign me"}).json()["id"]
+    r = client.post(f"/tickets/{tid}/assign", json={"role": "execution"})
+    assert r.status_code == 201, r.text
+    assert r.json()["seat"] in ("w1", "w2")
+    assert r.json()["authority"] == "build"
+    holder = client.get(f"/tickets/{tid}/assignment").json()["holder"]
+    assert holder["seat"] == r.json()["seat"]
+    # accept role on a seat that has since contributed => excluded
+    r2 = client.post(f"/tickets/{tid}/assign",
+                     json={"role": "product-owner", "seat": "w1"})
+    # w1 may or may not be the earlier pick; either 201 or 409 with a real code
+    assert r2.status_code in (201, 409)
+    rel = client.post(f"/tickets/{tid}/release", json={})
+    assert rel.status_code == 200
+    assert client.get(f"/tickets/{tid}/assignment").json()["holder"] is None
+
+
+def test_assign_unknown_role_409(tmp_path, monkeypatch):
+    client = _assign_client(tmp_path, monkeypatch)
+    tid = client.post("/tickets", json={"title": "t"}).json()["id"]
+    r = client.post(f"/tickets/{tid}/assign", json={"role": "wizard"})
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "unknown_role"
+
+
+def test_seats_roster_endpoint(tmp_path, monkeypatch):
+    client = _assign_client(tmp_path, monkeypatch)
+    tid = client.post("/tickets", json={"title": "t"}).json()["id"]
+    client.post(f"/tickets/{tid}/assign", json={"role": "execution"})
+    body = client.get("/seats").json()
+    assert sum(s["load"] for s in body["seats"].values()) == 1
+    assert len(body["assignments"]) == 1
+
+
+def test_list_events(client):
+    tid = client.post("/tickets", json={"title": "ev"}).json()["id"]
+    client.post(f"/tickets/{tid}/events",
+                json={"kind": "thread_message", "payload": {"text": "hi"}})
+    resp = client.get(f"/tickets/{tid}/events")
+    assert resp.status_code == 200
+    kinds = [e["kind"] for e in resp.json()]
+    assert kinds[0] == "created" and kinds[-1] == "thread_message"
+    assert client.get("/tickets/TK-NOPE/events").status_code == 404

@@ -45,11 +45,10 @@ from ticket_hub.adapters import (
     MatrixAdapter,
     SlackAdapter,
 )
+from ticket_hub.paths import hub_path
 from ticket_hub.translate import polish_pass
 
-DEFAULT_STATE_PATH = os.path.join(
-    os.path.expanduser("~"), "tp-data", "ticket-hub", "outbound_state.json"
-)
+DEFAULT_STATE_PATH = hub_path("outbound_state.json")
 DEFAULT_HUB_URL = os.environ.get("TICKET_HUB_URL", "http://127.0.0.1:8777")
 
 # Platform -> adapter class (Lane C). The poller never forks these; it reuses

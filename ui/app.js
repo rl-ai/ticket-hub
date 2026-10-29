@@ -39,10 +39,32 @@
     view: "board",
     tickets: [],
     childCounts: {},
+    parents: {},            // board: child id -> parent id
+    statusOf: {},           // board: id -> status
     collapsed: new Set(),   // graph: ticket ids whose children are hidden
+    boardCollapsed: new Set(JSON.parse(localStorage.getItem("hub-board-collapsed") || "[]")),
+    typesOn: new Set(),     // empty = all types
+    topLevelOnly: localStorage.getItem("hub-board-toponly") === "1",
     drawerId: null,
     query: "",
   };
+
+  // ticket "kind" inferred from template/workflow tags
+  const TICKET_TYPES = [
+    { key: "product",  label: "Product",  tags: ["feature", "pmf", "design", "accept"] },
+    { key: "bug",      label: "Bug",      tags: ["bugfix", "triage-bug"] },
+    { key: "infra",    label: "Infra",    tags: ["infra", "monitor", "service"] },
+    { key: "research", label: "Research", tags: ["spike", "research", "wiki"] },
+    { key: "project",  label: "Project",  tags: ["project", "milestone", "charter"] },
+    { key: "system",   label: "System",   tags: ["forge", "lane", "promote", "build", "verify", "integration"] },
+    { key: "biz",      label: "Biz",      tags: ["bizdev", "sizing", "decision"] },
+  ];
+  function ticketType(t) {
+    const tags = (t.tags || []);
+    for (const ty of TICKET_TYPES)
+      if (tags.some((g) => ty.tags.includes(g))) return ty;
+    return { key: "other", label: "Other" };
+  }
 
   // ---------------------------------------------------------------- nav
   document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -58,6 +80,7 @@
     const titles = {
       board: "Board", graph: "Graph", updates: "Updates",
       wiki: "Wiki", monitoring: "Monitoring", admin: "Admin", roles: "Roles",
+      jobs: "Jobs",
     };
     $("#view-title").textContent = titles[view] || label(view);
     refresh();
@@ -74,6 +97,10 @@
     const data = await api("/board");
     state.columns = data.columns || {};
     state.childCounts = data.child_counts || {};
+    state.parents = data.parents || {};
+    state.statusOf = {};
+    for (const list of Object.values(state.columns))
+      for (const t of list) state.statusOf[t.id] = t.status;
   }
 
   function matchesQuery(t) {
@@ -82,15 +109,31 @@
       .toLowerCase().includes(state.query);
   }
 
+  // a child stays visible when searching or when its type filter matches
+  function passesType(t) {
+    return !state.typesOn.size || state.typesOn.has(ticketType(t).key);
+  }
+
   function renderBoard() {
     const root = $("#board-columns");
     root.textContent = "";
+    renderFilterBar();
     for (const status of STATUSES) {
       const col = el("div", "column");
       const head = el("div", "column-head");
       head.append(el("span", `column-dot st-${status}`));
       head.append(el("span", null, status));
-      const tickets = (state.columns?.[status] || []).filter(matchesQuery);
+      const all = (state.columns?.[status] || []).filter(matchesQuery);
+      // signal filters: top-level only hides children whose parent is also
+      // on the board; search always defeats it (you asked, you get the hit).
+      let tickets = all.filter(passesType);
+      // collapse: hide a card when any ancestor is collapsed
+      if (!state.query)
+        tickets = tickets.filter((t) =>
+          !ancestorsOf(t.id).some((a) => state.boardCollapsed.has(a)));
+      if (state.topLevelOnly && !state.query)
+        tickets = tickets.filter((t) => !state.parents[t.id]
+                                     || !(state.parents[t.id] in state.statusOf));
       head.append(el("span", "column-count", String(tickets.length)));
       col.append(head);
       const cards = el("div", "column-cards");
@@ -100,18 +143,93 @@
     }
   }
 
+  function renderFilterBar() {
+    const bar = $("#board-filters");
+    if (!bar) return;
+    bar.textContent = "";
+    const counts = {};
+    for (const list of Object.values(state.columns))
+      for (const t of list) {
+        const k = ticketType(t).key;
+        counts[k] = (counts[k] || 0) + 1;
+      }
+    for (const ty of [...TICKET_TYPES, { key: "other", label: "Other" }]) {
+      if (!counts[ty.key]) continue;
+      const b = el("button", `type-chip type-${ty.key}` +
+                   (state.typesOn.has(ty.key) ? " on" : ""),
+                   `${ty.label} ${counts[ty.key]}`);
+      b.addEventListener("click", () => {
+        state.typesOn.has(ty.key) ? state.typesOn.delete(ty.key)
+                                  : state.typesOn.add(ty.key);
+        renderBoard();
+      });
+      bar.append(b);
+    }
+    const top = el("button", "type-chip" + (state.topLevelOnly ? " on" : ""),
+                   "Top level only");
+    top.addEventListener("click", () => {
+      state.topLevelOnly = !state.topLevelOnly;
+      localStorage.setItem("hub-board-toponly", state.topLevelOnly ? "1" : "0");
+      renderBoard();
+    });
+    bar.append(top);
+    if (state.boardCollapsed.size) {
+      const exp = el("button", "type-chip", "Expand all");
+      exp.addEventListener("click", () => {
+        state.boardCollapsed.clear();
+        localStorage.setItem("hub-board-collapsed", "[]");
+        renderBoard();
+      });
+      bar.append(exp);
+    }
+  }
+
+  function ancestorsOf(id) {
+    const out = [];
+    let p = state.parents[id];
+    const seen = new Set();
+    while (p && !seen.has(p)) { out.push(p); seen.add(p); p = state.parents[p]; }
+    return out;
+  }
+
   function ticketCard(t) {
-    const card = el("div", "card");
-    card.append(el("div", "card-title", t.title));
+    const kids = state.childCounts[t.id] || 0;
+    const collapsed = state.boardCollapsed.has(t.id);
+    const card = el("div", "card" + (collapsed ? " is-collapsed" : ""));
+    const titleRow = el("div", "card-title-row");
+    if (kids) {
+      const tog = el("button", "collapse-toggle" + (collapsed ? " collapsed" : ""),
+                     collapsed ? "▸" : "▾");
+      tog.title = collapsed ? "Expand children" : "Collapse children";
+      tog.addEventListener("click", (e) => {
+        e.stopPropagation();
+        collapsed ? state.boardCollapsed.delete(t.id)
+                  : state.boardCollapsed.add(t.id);
+        localStorage.setItem("hub-board-collapsed",
+                             JSON.stringify([...state.boardCollapsed]));
+        renderBoard();
+      });
+      titleRow.append(tog);
+    }
+    titleRow.append(el("div", "card-title", t.title));
+    card.append(titleRow);
     const meta = el("div", "card-meta");
     meta.append(el("span", `status-pill st-${t.status}`, label(t.status)));
+    const ty = ticketType(t);
+    if (ty.key !== "other")
+      meta.append(el("span", `type-chip sm type-${ty.key}`, ty.label));
     const owner = t.owner || {};
     if (owner.family && owner.family !== "unknown")
       meta.append(el("span", "chip chip-family", owner.family));
     if (t.priority && t.priority !== "medium")
       meta.append(el("span", `prio prio-${t.priority}`, t.priority));
-    const kids = state.childCounts[t.id] || 0;
-    if (kids) meta.append(el("span", "child-count", `⌄ ${kids}`));
+    if (kids) {
+      const done = (state.columns?.done || []).filter(
+        (d) => state.parents[d.id] === t.id).length;
+      const cc = el("span", "child-count", `${done}/${kids} done`);
+      if (collapsed) cc.classList.add("dim");
+      meta.append(cc);
+    }
     card.append(meta);
     card.addEventListener("click", () => openDrawer(t.id));
     return card;
@@ -242,7 +360,7 @@
     $("#drawer-body").textContent = "";
     $("#drawer-id").textContent = id;
     $("#drawer-title").textContent = "…";
-    let ticket, lin, bindings, plan;
+    let ticket, lin, bindings, plan, assignment;
     try {
       [ticket, lin] = await Promise.all([
         api(`/tickets/${id}`),
@@ -250,6 +368,7 @@
       ]);
       try { bindings = await api(`/tickets/${id}/bindings`); } catch { bindings = []; }
       try { plan = await api(`/tickets/${id}/plan`); } catch { plan = null; }
+      try { assignment = await api(`/tickets/${id}/assignment`); } catch { assignment = null; }
     } catch (err) {
       $("#drawer-body").append(el("p", "muted", "Failed to load: " + err.message));
       return;
@@ -284,6 +403,8 @@
     add("Status", ticket.status);
     add("Priority", ticket.priority);
     add("Owner", `${ticket.owner?.name || "—"}${ticket.owner?.family ? " · " + ticket.owner.family : ""}`);
+    if (assignment && assignment.holder)
+      add("Holder", `${assignment.holder.seat} @ ${assignment.holder.role}`);
     add("Tags", (ticket.tags || []).join(", ") || "—");
     add("Updated", (ticket.updated_at || "").replace("T", " ").slice(0, 16));
     sec2.append(kv);
@@ -294,7 +415,7 @@
     }
     body.append(sec2);
 
-    // plan: progress, blocked by Ray, remaining
+    // plan: progress, blocked by owner, remaining
     if (plan) {
       const secP = el("div", "drawer-section");
       secP.append(el("h3", null, "Plan"));
@@ -311,10 +432,10 @@
         sum.textContent = plan.summary;
         secP.append(sum);
       }
-      if ((plan.blocked_by_ray || []).length) {
+      if ((plan.blocked_by_owner || []).length) {
         const bl = el("div", "plan-blocked");
-        bl.append(el("h4", null, `Blocked by Ray (${plan.blocked_by_ray.length})`));
-        for (const b of plan.blocked_by_ray.slice(0, 10)) {
+        bl.append(el("h4", null, `Blocked by owner (${plan.blocked_by_owner.length})`));
+        for (const b of plan.blocked_by_owner.slice(0, 10)) {
           const row = el("div", "plan-item");
           const link = el("a", null, b.title);
           link.addEventListener("click", () => openDrawer(b.id));
@@ -906,7 +1027,7 @@
       outputs: ["Design critiques", "Interaction specs"],
       seat: "Any strong visual-reasoning seat" },
     { key: "pmf", mission: "Product-market-fit challenge: who wants this, why now.",
-      quality_bar: "Answers the 'what would make Ray stop using it' question.",
+      quality_bar: "Answers the 'what would make the owner stop using it' question.",
       inputs: ["Feature proposals", "Usage signals"],
       outputs: ["PMF verdicts", "Kill/scale recommendations"],
       seat: "Any strong reasoning seat" },
@@ -926,7 +1047,7 @@
       outputs: ["Metric definitions", "Measurement reports"],
       seat: "Any seat; deterministic tools preferred" },
     { key: "product-owner", mission: "Planner/reviewer: sequences scope, accepts or returns work per ticket.",
-      quality_bar: "Reviewer ≠ author; acceptance is Ray's alone.",
+      quality_bar: "Reviewer ≠ author; acceptance is the owner's alone.",
       inputs: ["Ticket queue", "Execution reports"],
       outputs: ["Sequenced scope", "Accept/return decisions"],
       seat: "GLM seat (default engine)" },
@@ -952,6 +1073,43 @@
     for (const r of roles) {
       root.append(roleCard(r));
     }
+    // seat roster: health / load / open assignments
+    try {
+      const roster = await api("/seats");
+      const sec = el("div", "roles-section");
+      sec.append(el("h2", null, "Seat roster"));
+      const table = el("table", "seats-table");
+      const thead = el("thead");
+      const hrow = el("tr");
+      ["Seat", "Health", "Load", "Licensed roles"].forEach((h) => hrow.append(el("th", null, h)));
+      thead.append(hrow);
+      table.append(thead);
+      const tb = el("tbody");
+      for (const [name, s] of Object.entries(roster.seats || {}).sort()) {
+        const tr = el("tr");
+        tr.append(el("td", null, name));
+        const healthCell = el("td");
+        healthCell.append(el("span", "status-pill st-" + (s.health === "up" ? "done" : "blocked"), s.health));
+        tr.append(healthCell, el("td", null, String(s.load)));
+        tr.append(el("td", "muted", (s.roles || []).join(", ")));
+        tb.append(tr);
+      }
+      table.append(tb);
+      sec.append(table);
+      const asn = roster.assignments || [];
+      if (asn.length) {
+        sec.append(el("h2", null, `Open assignments (${asn.length})`));
+        for (const a of asn) {
+          const row = el("div", "plan-item");
+          const link = el("a", null, a.title);
+          link.addEventListener("click", () => openDrawer(a.ticket_id));
+          row.append(el("span", "chip chip-family", a.seat + "@" + a.role), link,
+                     el("span", "muted", " " + a.status));
+          sec.append(row);
+        }
+      }
+      root.append(sec);
+    } catch {}
   }
 
   function roleCard(r) {

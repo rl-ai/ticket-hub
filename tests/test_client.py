@@ -51,7 +51,7 @@ def test_list_filters(hub):
 
 def test_patch_status_transition(hub):
     t = _create(hub, "CLI transition")
-    patched = hub.patch(t["id"], status="open", actor="ray")
+    patched = hub.patch(t["id"], status="open", actor="owner")
     assert patched["status"] == "open"
     with pytest.raises(HubError) as ei:
         hub.patch(t["id"], status="draft")  # open -> draft illegal

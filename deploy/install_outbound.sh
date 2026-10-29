@@ -4,7 +4,7 @@
 # Renders deploy/com.ticket-hub.outbound.plist.template into
 #   ~/Library/LaunchAgents/com.ticket-hub.outbound.plist
 # (python path, repo paths, interval) and prints the EXACT launchctl command
-# for Ray to run. This script never loads the service itself — service
+# for the owner to run. This script never loads the service itself — service
 # control belongs to the user.
 set -euo pipefail
 
@@ -13,12 +13,12 @@ REPO_DIR="$(cd "${DEPLOY_DIR}/.." && pwd)"
 TEMPLATE="${DEPLOY_DIR}/com.ticket-hub.outbound.plist.template"
 TARGET="${HOME}/Library/LaunchAgents/com.ticket-hub.outbound.plist"
 
-PYTHON="${TICKET_HUB_PYTHON:-${REPO_DIR}/../forge-venv/bin/python}"
-CONFIG="${TICKET_HUB_ADAPTERS_CONFIG:-${HOME}/tp-data/ticket-hub/adapters.json}"
-STATE="${TICKET_HUB_OUTBOUND_STATE:-${HOME}/tp-data/ticket-hub/outbound_state.json}"
+PYTHON="${TICKET_HUB_PYTHON:-$(command -v python3)}"
+CONFIG="${TICKET_HUB_ADAPTERS_CONFIG:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/adapters.json}"
+STATE="${TICKET_HUB_OUTBOUND_STATE:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/outbound_state.json}"
 HUB_URL="${TICKET_HUB_URL:-http://127.0.0.1:8777}"
 INTERVAL="${TICKET_HUB_OUTBOUND_INTERVAL:-60}"
-LOG_DIR="${TICKET_HUB_OUTBOUND_LOG_DIR:-${HOME}/tp-data/ticket-hub/logs}"
+LOG_DIR="${TICKET_HUB_OUTBOUND_LOG_DIR:-${TICKET_HUB_HOME:-$HOME/.ticket-hub}/logs}"
 
 [ -f "${TEMPLATE}" ] || { echo "missing template: ${TEMPLATE}" >&2; exit 1; }
 [ -x "${PYTHON}" ] || { echo "python not executable: ${PYTHON} (set TICKET_HUB_PYTHON)" >&2; exit 1; }

@@ -335,7 +335,7 @@ def _running_ticket(hub, title="Packet target"):
     parent = hub.create_ticket("Packet parent")
     t = hub.create_ticket(title, body="the body of work",
                           parent=parent["id"], tags=["packetq"],
-                          owner="ray")
+                          owner="owner")
     hub.patch(t["id"], status="open")
     hub.patch(t["id"], status="running")
     hub.comment(t["id"], "first note")
