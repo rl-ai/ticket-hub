@@ -4,9 +4,9 @@
 # Inert-safe: skips (exit 0) when the mount is absent, retries nothing.
 set -u
 DEST_BASE="$HOME/nas/eva/backups"
-HUB_DB="$HOME/tp-data/ticket-hub/hub.db"
-SNAP_DIR="$HOME/tp-data/forge/snapshots"
-LOG="$HOME/tp-data/ticket-hub/backup.log"
+HUB_DB="$HOME/.local/share/ticket-hub/ticket-hub/hub.db"
+SNAP_DIR="$HOME/.local/share/ticket-hub/forge/snapshots"
+LOG="$HOME/.local/share/ticket-hub/ticket-hub/backup.log"
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 

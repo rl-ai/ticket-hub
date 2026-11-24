@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """One-off: migrate the legacy flat ticket ledger into ticket-hub.
 
-Legacy: ~/tp-data/tickets/tickets.db (tickets/ticket_events/ticket_edges).
-Hub:    TICKET_HUB_DB or ~/tp-data/ticket-hub/hub.db.
+Legacy: ~/.local/share/ticket-hub/tickets/tickets.db (tickets/ticket_events/ticket_edges).
+Hub:    TICKET_HUB_DB or ~/.local/share/ticket-hub/ticket-hub/hub.db.
 
 Idempotent: tickets are keyed by external_refs.legacy_id; events by
 payload.legacy_event_id; edges by (legacy src/dst/kind). Original ts and
@@ -20,8 +20,8 @@ import os
 import sqlite3
 import sys
 
-LEGACY = os.path.expanduser("~/tp-data/tickets/tickets.db")
-HUB = os.environ.get("TICKET_HUB_DB", os.path.expanduser("~/tp-data/ticket-hub/hub.db"))
+LEGACY = os.path.expanduser("~/.local/share/ticket-hub/tickets/tickets.db")
+HUB = os.environ.get("TICKET_HUB_DB", os.path.expanduser("~/.local/share/ticket-hub/ticket-hub/hub.db"))
 
 STATE_MAP = {
     "open": "open", "claimed": "running", "running": "running",
