@@ -117,10 +117,39 @@ EVENT_KINDS: frozenset[str] = frozenset(
         "handoff",
         "thread_message",
         "link",
+        "label_changed",
+        "ticket_deleted",  # S4: tombstone marker on the deleted ticket itself
     }
 )
 
 PLATFORMS: frozenset[str] = frozenset({"matrix", "discord", "slack"})
+
+# ---------------------------------------------------------------------------
+# Access labels (ACCESS-P1-CONTRACT §1). P1 allows public < external < internal;
+# "restricted" and "vault:*" are P4 and rejected as label_unsupported.
+# ---------------------------------------------------------------------------
+
+#: P1 labels, ordered low -> high.
+LABELS: tuple[str, ...] = ("public", "external", "internal")
+
+LABEL_RANK: dict[str, int] = {"public": 0, "external": 1, "internal": 2}
+
+
+def check_label(label: str) -> str:
+    """Return *label* if it is a supported P1 label; raise ValueError whose
+    message starts with ``label_unsupported`` otherwise."""
+    if label not in LABEL_RANK:
+        raise ValueError(
+            f"label_unsupported: {label!r} (expected one of {list(LABELS)})"
+        )
+    return label
+
+
+def max_label(a: str, b: str) -> str:
+    """The higher of two labels by LABEL_RANK. Both must be supported."""
+    check_label(a)
+    check_label(b)
+    return a if LABEL_RANK[a] >= LABEL_RANK[b] else b
 
 ACTOR_KINDS: frozenset[str] = frozenset({"agent", "human", "system"})
 
@@ -170,6 +199,7 @@ class Ticket:
     artifacts: list = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
+    label: str = "internal"
 
     def to_dict(self) -> dict:
         return {
@@ -183,6 +213,7 @@ class Ticket:
             "families": list(self.families),
             "external_refs": dict(self.external_refs),
             "artifacts": list(self.artifacts),
+            "label": self.label,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -212,13 +243,15 @@ class Event:
     kind: str
     payload: dict = field(default_factory=dict)
     seq: int = 0  # store-assigned monotonic ordering key
+    label: str = "internal"
+    via: str | None = None  # set when the event was written through a relay
 
     def __post_init__(self) -> None:
         if self.kind not in EVENT_KINDS:
             raise ValueError(f"unknown event kind: {self.kind!r} (expected one of {sorted(EVENT_KINDS)})")
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "id": self.id,
             "ticket_id": self.ticket_id,
             "ts": self.ts,
@@ -226,7 +259,11 @@ class Event:
             "actor": self.actor.to_dict() if self.actor else None,
             "kind": self.kind,
             "payload": dict(self.payload),
+            "label": self.label,
         }
+        if self.via is not None:
+            d["via"] = self.via
+        return d
 
 
 @dataclass
@@ -246,6 +283,7 @@ class WikiPage:
     tags: list[str] = field(default_factory=list)
     actor: str = ""
     ts: str = ""  # ISO-8601 UTC
+    label: str = "internal"
 
     def to_dict(self) -> dict:
         return {
@@ -257,6 +295,7 @@ class WikiPage:
             "tags": list(self.tags),
             "actor": self.actor,
             "ts": self.ts,
+            "label": self.label,
         }
 
     def slim(self) -> dict:
@@ -268,6 +307,7 @@ class WikiPage:
             "title": self.title,
             "tags": list(self.tags),
             "ts": self.ts,
+            "label": self.label,
         }
 
 

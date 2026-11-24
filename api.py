@@ -11,16 +11,21 @@ Run:
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from urllib.parse import urlparse
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.routing import Match
 
+from ticket_hub.model import LABEL_RANK, check_label
 from ticket_hub.paths import hub_home, hub_path
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -35,16 +40,26 @@ def _canon_status(value: str) -> str:
     if v not in STATUSES:
         raise ValueError(f"Unknown status: {value}")
     return v
-from ticket_hub.model import EDGE_TYPES, gate_markers  # single source of truth: ticket_hub/model.py
+from ticket_hub.model import (
+    ACTOR_KINDS,
+    EDGE_TYPES,
+    gate_markers,  # single source of truth: ticket_hub/model.py
+)
 # Types that must stay acyclic in the graph. Graph edge types are NOT checked.
 CYCLE_EDGE_TYPES: set[str] = {"parent_of", "blocks"}
 EVENT_KINDS = {
     "created", "updated", "status_changed", "comment", "checkpoint",
     "decision", "approval_receipt", "artifact", "handoff",
-    "thread_message", "link",
+    "thread_message", "link", "label_changed",
 }
 PLATFORMS = {"matrix", "discord", "slack", "fake"}
 KNOWN_ISSUE_MARKERS = ("QUEUED FINDING", "KNOWN-FAILS")
+
+#: ACCESS-P1-CONTRACT §0: only the literal "off" disables auth; anything else
+#: (including unset) means auth is required.
+AUTH_ENV = "TICKET_HUB_AUTH"
+SESSION_COOKIE = "hub_session"
+_UNSET = object()  # sentinel: caller passed no explicit body actor
 
 
 # --------------------------------------------------------------------------
@@ -126,6 +141,7 @@ class TicketCreate(BaseModel):
     families: list[str] = []
     priority: str = "medium"
     external_refs: dict[str, Any] = {}
+    label: Optional[str] = None
 
 
 class TicketPatch(BaseModel):
@@ -140,6 +156,12 @@ class EventCreate(BaseModel):
     kind: str
     actor: Optional[Any] = None
     payload: dict[str, Any] = {}
+    label: Optional[str] = None
+
+
+class LabelUpdate(BaseModel):
+    label: str
+    reason: str = ""
 
 
 class EdgeCreate(BaseModel):
@@ -168,6 +190,7 @@ class WikiPageCreate(BaseModel):
     body_md: str = ""
     tags: list[str] = []
     actor: Optional[Any] = None
+    label: Optional[str] = None
 
 
 class AssignCreate(BaseModel):
@@ -191,9 +214,75 @@ class InstantiateCreate(BaseModel):
 # App factory
 # --------------------------------------------------------------------------
 
-def create_app(store: Any = None) -> FastAPI:
+_LOGIN_HTML = """<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>ticket-hub — sign in</title></head>
+<body style="font-family: system-ui, sans-serif; max-width: 26em; margin: 4em auto;">
+<h1>ticket-hub</h1>
+<p>Paste your hub token (<code>thk_...</code>) to start a browser session.</p>
+<form id="f">
+<input id="t" type="password" autocomplete="off" style="width: 100%; padding: .5em;"
+       placeholder="token">
+<p><button type="submit" style="padding: .5em 1em;">Sign in</button>
+   <span id="msg"></span></p>
+</form>
+<script>
+document.getElementById('f').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const token = document.getElementById('t').value;
+  const r = await fetch('/session', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({token})});
+  if (r.status === 204) { location.href = '/'; }
+  else { document.getElementById('msg').textContent = 'invalid token'; }
+});
+</script>
+</body>
+</html>
+"""
+
+
+def _auth_enabled(auth: "bool | None") -> bool:
+    """Contract §0: auth=None reads env TICKET_HUB_AUTH; default required.
+    Only the literal ``off`` disables."""
+    if auth is not None:
+        return bool(auth)
+    return os.environ.get(AUTH_ENV, "required").strip() != "off"
+
+
+_WT_FILE_CACHE: "dict[str, object]" = {"path": None, "mtime": None,
+                                       "tokens": frozenset()}
+
+
+def _write_tokens_from_file() -> "frozenset[str]":
+    """Tokens from TICKET_HUB_WRITE_TOKENS_FILE (one per line, '#' comments).
+    Re-read only when mtime changes; any error yields the empty set — the
+    union is additive, so a missing file can never widen access."""
+    path = os.environ.get("TICKET_HUB_WRITE_TOKENS_FILE", "").strip()
+    if not path:
+        return frozenset()
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return frozenset()
+    if (_WT_FILE_CACHE["path"] == path
+            and _WT_FILE_CACHE["mtime"] == mtime):
+        return _WT_FILE_CACHE["tokens"]  # type: ignore[return-value]
+    try:
+        with open(path, encoding="utf-8") as fh:
+            toks = frozenset(ln.strip() for ln in fh
+                             if ln.strip() and not ln.strip().startswith("#"))
+    except OSError:
+        return frozenset()
+    _WT_FILE_CACHE.update({"path": path, "mtime": mtime, "tokens": toks})
+    return toks
+
+
+def create_app(store: Any = None, *, auth: "bool | None" = None) -> FastAPI:
     app = FastAPI(title="ticket-hub", version="0.1.0")
     app.state.store = store
+    auth_on = _auth_enabled(auth)
+    app.state.auth_on = auth_on
 
     def get_store():
         if app.state.store is None:
@@ -211,6 +300,197 @@ def create_app(store: Any = None) -> FastAPI:
             os.makedirs(os.path.dirname(db_path), exist_ok=True)
             app.state.store = StoreGateway(Store(db_path))
         return app.state.store
+
+    # ---- access helpers (auth pipeline; contract §3) ----------------------
+
+    def get_access():
+        """Lazily create AccessStore on the store's sqlite connection.
+        Tests may pre-set app.state.access."""
+        access = getattr(app.state, "access", None)
+        if access is None:
+            from ticket_hub.access import AccessStore
+            st = get_store()
+            conn = getattr(st, "conn", None)
+            if conn is None:  # raw Store fallback (no gateway wrapper)
+                conn = getattr(st, "_conn", None)
+            if conn is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"code": "access_unavailable",
+                            "message": "Store exposes no sqlite connection "
+                                       "for the access layer"},
+                )
+            access = AccessStore(conn)
+            app.state.access = access
+        return access
+
+    def get_conn():
+        st = get_store()
+        conn = getattr(st, "conn", None)
+        if conn is None:
+            conn = getattr(st, "_conn", None)
+        if conn is None and getattr(st, "_store", None) is not None:
+            inner = st._store
+            conn = getattr(inner, "conn", None) or getattr(inner, "_conn", None)
+        if conn is None:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "access_unavailable",
+                        "message": "Store exposes no sqlite connection"},
+            )
+        return conn
+
+    def get_family_acl():
+        """Lazily create the FamilyAcl (families sensitivity table) on the
+        store's connection. Tests may pre-set app.state.family_acl."""
+        facl = getattr(app.state, "family_acl", None)
+        if facl is None:
+            from ticket_hub.family_acl import FamilyAcl
+            facl = FamilyAcl(get_conn())
+            app.state.family_acl = facl
+        return facl
+
+    def _fam_scopes(viewer):
+        """Parse a Viewer's ``fam:<family>:<action>`` scopes.
+        None -> legacy/unscoped token (no family restriction)."""
+        from ticket_hub.family_acl import parse_family_scopes
+        return parse_family_scopes(getattr(viewer, "scopes", ()) or ())
+
+    def external_reader(request: Request):
+        from ticket_hub.access import ExternalReader
+        reader = getattr(request.state, "_ext_reader", None)
+        if reader is None:
+            reader = ExternalReader(get_conn(), request.state.viewer)
+            request.state._ext_reader = reader
+        return reader
+
+    def _store_supports_labels() -> bool:
+        """Fix-round §3: can the current store record labels? The real
+        Store/StoreGateway surface set_ticket_label and accept label=;
+        FakeStore (the auth-off legacy test double) surfaces neither. Gate on
+        that capability instead of hoping a TypeError stays invisible."""
+        store = get_store()
+        if hasattr(store, "set_ticket_label"):
+            return True
+        inner = getattr(store, "_store", None)  # gateway wrapping a raw Store
+        return inner is not None and hasattr(inner, "set_ticket_label")
+
+    def _supports_kwarg(func: Any, name: str) -> bool:
+        """Explicit capability check (fix-round §3): does this callable
+        accept keyword *name*? This replaces the old catch-and-retry fallback —
+        a TypeError raised INSIDE a store call must propagate, never be
+        mistaken for an unsupported-keyword signature. A **kwargs catch-all
+        accepts anything."""
+        try:
+            params = inspect.signature(func).parameters
+        except (TypeError, ValueError):  # builtins/C callables: assume support
+            return True
+        p = params.get(name)
+        if p is not None and p.kind in (
+                inspect.Parameter.KEYWORD_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD):
+            return True
+        return any(pp.kind == inspect.Parameter.VAR_KEYWORD
+                   for pp in params.values())
+
+    def acting(request: Request, body_actor: Any = _UNSET):
+        """Resolve 'who writes this' (contract §3 identity rules).
+        Auth ON: returns ``(Actor, via)`` where Actor is ALWAYS the DB-loaded
+        actor. Body actor absent or equal to the viewer -> the viewer's actor.
+        Otherwise AccessStore.effective() (relay/act_as); PermissionError ->
+        403 actor_mismatch. The effective viewer must be realm=internal to
+        write, else 403.
+
+        Auth OFF: returns the legacy ``(dict, None)`` free-form actor so
+        pre-P1 store call shapes are unchanged (byte-identical behaviour)."""
+        viewer = getattr(request.state, "viewer", None)
+        if viewer is None:  # auth off: legacy free-form actor
+            return (normalize_actor(body_actor if body_actor is not _UNSET
+                                    else None), None)
+        claimed = None
+        header_claim = getattr(request.state, "act_as_claim", None)
+        if header_claim is not None:
+            # Amendment A1: X-Hub-Act-As names the effective actor (already
+            # resolved by the pipeline; the viewer was swapped, so comparing
+            # the claim to viewer.actor.id here would be dead code — check
+            # the body actor against the EFFECTIVE viewer instead). A body
+            # actor that differs from the EFFECTIVE actor -> 403
+            # actor_mismatch. Visibility/404 checks run before this, so a
+            # mismatch on a hidden object stays a 404.
+            if (body_actor is not _UNSET and body_actor is not None
+                    and normalize_actor(body_actor)["id"] != viewer.actor.id):
+                raise HTTPException(
+                    status_code=403,
+                    detail={"code": "actor_mismatch",
+                            "message": "body actor differs from the "
+                                       "X-Hub-Act-As actor"})
+        if body_actor is not _UNSET and body_actor is not None:
+            norm = normalize_actor(body_actor)
+            if norm["id"] != viewer.actor.id:
+                claimed = norm["id"]
+        try:
+            eff = get_access().effective(viewer, claimed)
+        except PermissionError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "actor_mismatch", "message": str(exc)})
+        if eff.realm != "internal":
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "external_writer",
+                        "message": "effective viewer must be internal to write"},
+            )
+        actor = None
+        get_actor = getattr(get_store(), "get_actor", None) \
+            or getattr(getattr(get_store(), "_store", None), "get_actor", None)
+        if get_actor is not None:
+            actor = get_actor(eff.actor.id)
+        if actor is None:
+            # CONTRACT-GAP: the gateway surfaces no get_actor; rebuild the
+            # Actor from the Viewer instead of inventing a store API.
+            from ticket_hub.model import Actor as _Actor
+            actor = _Actor(id=eff.actor.id, name=eff.actor.name,
+                           family=eff.actor.family, kind=eff.actor.kind)
+        return actor, eff.via
+
+    def _actor_as_dict(actor) -> dict:
+        """Actor (auth on) or dict (auth off) -> plain dict for helpers that
+        only speak dicts (seats/templates)."""
+        return actor if isinstance(actor, dict) else actor.to_dict()
+
+    def viewer_is_off(request: Request) -> bool:
+        """True when the pipeline placed no viewer (auth off)."""
+        return getattr(request.state, "viewer", None) is None
+
+    def require_owner(request: Request):
+        viewer = getattr(request.state, "viewer", None)
+        if viewer is not None and not viewer.is_owner:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "publish_forbidden",
+                        "message": "only owner actors may publish below "
+                                   "internal or lower a label"},
+            )
+
+    def check_publish_label(request: Request, label: "str | None"):
+        """Create-time label gate (fix-round §2): the label is validated with
+        check_label FIRST (unsupported -> ValueError -> 400 label_unsupported
+        for every caller, owner or not, auth on or off); an explicit label
+        below internal then requires owner (403 publish_forbidden). Returns
+        the store-facing label."""
+        if label is None:
+            return "internal"
+        from ticket_hub.model import check_label
+        check_label(label)  # ValueError -> 400 bad_request label_unsupported
+        viewer = getattr(request.state, "viewer", None)
+        if viewer is not None and not viewer.is_owner \
+                and LABEL_RANK[label] < LABEL_RANK["internal"]:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "publish_forbidden",
+                        "message": "only owner actors may publish below internal"},
+            )
+        return label
 
     def get_ticket_or_404(ticket_id: str) -> dict:
         ticket = get_store().get(ticket_id)
@@ -252,14 +532,384 @@ def create_app(store: Any = None) -> FastAPI:
             status_code=400,
         )
 
+    @app.exception_handler(PermissionError)
+    async def permission_error_handler(request, exc):
+        # Contract §3: every PermissionError from AccessStore.effective() is a
+        # 403 actor_mismatch on every route (belt and braces alongside the
+        # catch inside acting()).
+        return JSONResponse(
+            {"error": {"code": "actor_mismatch", "message": str(exc)}},
+            status_code=403,
+        )
+
+    # ---- auth pipeline (contract §3; only when auth is on) -----------------
+
+    if auth_on:
+        from ticket_hub.policy import check_policies, policy_for
+
+        def _error(status: int, code: str, message: str) -> JSONResponse:
+            return JSONResponse({"error": {"code": code, "message": message}},
+                                status_code=status)
+
+        async def _read_json_body(request: Request) -> dict:
+            try:
+                data = await request.json()
+            except Exception:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "bad_request",
+                            "message": "body must be JSON"})
+            if not isinstance(data, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "bad_request",
+                            "message": "body must be a JSON object"})
+            return data
+
+        def _not_found_response() -> JSONResponse:
+            # identical envelope to a missing object (hidden == missing)
+            return JSONResponse(
+                {"error": {"code": "not_found", "message": "not found"}},
+                status_code=404,
+            )
+
+        def _token_from(request: Request) -> "str | None":
+            header = request.headers.get("authorization") or ""
+            scheme, _, creds = header.partition(" ")
+            if scheme.lower() == "bearer" and creds.strip():
+                return creds.strip()
+            return request.cookies.get(SESSION_COOKIE) or None
+
+        def _origin_ok(request: Request) -> bool:
+            """CSRF gate: cookie-authenticated mutations need an Origin (or
+            Referer) whose host:port equals the request Host."""
+            host = (request.headers.get("host") or "").strip().lower()
+            candidate = request.headers.get("origin") \
+                or request.headers.get("referer")
+            if not candidate or not host:
+                return False
+            try:
+                parsed = urlparse(candidate)
+                cand_host = parsed.netloc
+                if not cand_host:
+                    cand_host = urlparse(f"//{candidate}").netloc
+            except ValueError:
+                return False
+            return cand_host.strip().lower() == host
+
+        def _audit(viewer, method: str, route: str, status: int,
+                   decision: str) -> None:
+            try:
+                get_access().log_access(
+                    actor_id=viewer.actor.id if viewer else None,
+                    credential_id=viewer.credential_id if viewer else None,
+                    method=method, route=route, status=int(status),
+                    decision=decision)
+            except Exception:  # never let auditing break the response
+                pass
+
+        @app.middleware("http")
+        async def auth_pipeline(request: Request, call_next):
+            scope = request.scope
+            match, child_scope = None, {}
+            matched_route = None
+            for route in request.app.routes:
+                m, cs = route.matches(scope)
+                if m == Match.FULL:
+                    match, matched_route, child_scope = m, route, cs
+                    break
+                if m == Match.PARTIAL and matched_route is None:
+                    match, matched_route, child_scope = m, route, cs
+            if matched_route is None:
+                return await call_next(request)  # normal 404, unlogged
+            path = getattr(matched_route, "path", "")
+            # FAIL CLOSED (fix-round §1): HEAD inherits the GET policy; any
+            # other (method, path) without a policy is treated like a
+            # non-public route — authenticate first, then 404. call_next is
+            # never reached for an unlisted pair.
+            policy = policy_for(request.method, path)
+            unlisted = policy is None
+            if unlisted:
+                policy = "authenticated"  # gate it; the handler is never run
+            if policy == "public":
+                return await call_next(request)
+            token = _token_from(request)
+            viewer = get_access().viewer_for_token(token) if token else None
+            if viewer is None:
+                _audit(None, request.method, path, 401, "deny")
+                return _error(401, "unauthorized",
+                              "authentication required")
+            # Write-token scoping: mutations need a write-class bearer.
+            # Env read per-request so tests can set it dynamically. The
+            # literal "*" (test/dev only) lets any valid bearer through;
+            # unset or empty fails closed. Optional TICKET_HUB_WRITE_TOKENS_FILE
+            # (one token per line, '#' = comment) unions in — re-read on mtime
+            # change, so write tokens rotate by editing the file instead of
+            # recreating the container (identity-lifecycle requirement).
+            if request.method not in ("GET", "HEAD", "OPTIONS"):
+                write_tokens = {
+                    t.strip() for t in os.environ.get(
+                        "TICKET_HUB_WRITE_TOKENS", "").split(",")
+                    if t.strip()
+                }
+                write_tokens |= _write_tokens_from_file()
+                if "*" not in write_tokens and token not in write_tokens:
+                    _audit(viewer, request.method, path, 403, "deny")
+                    return _error(403, "read_only_token",
+                                  "write requires a write-class token")
+            cookie_auth = (request.cookies.get(SESSION_COOKIE) == token)
+            if cookie_auth and request.method in ("POST", "PATCH", "PUT",
+                                                  "DELETE"):
+                if not _origin_ok(request):
+                    _audit(viewer, request.method, path, 403, "deny")
+                    return _error(403, "csrf",
+                                  "cookie mutation needs a same-origin header")
+            # Amendment A1: X-Hub-Act-As is resolved right after the token.
+            # The effective Viewer (via = the relay) replaces the viewer for
+            # EVERYTHING that follows: external handling, ExternalReader,
+            # publication authority and handlers. The audit row records the
+            # effective actor and the credential.
+            header = request.headers.get("x-hub-act-as")
+            if header is not None:
+                header = header.strip() or None
+            request.state.viewer = viewer
+            request.state.act_as_claim = header
+            if header:
+                try:
+                    viewer = get_access().effective(viewer, header)
+                except PermissionError as exc:
+                    _audit(viewer, request.method, path, 403, "deny")
+                    return _error(403, "actor_mismatch", str(exc))
+                request.state.viewer = viewer
+            if unlisted:  # authenticated but (method, path) has no policy
+                _audit(viewer, request.method, path, 404, "deny")
+                return _not_found_response()
+            if match == Match.PARTIAL:  # method not allowed on the route
+                return await call_next(request)
+            params = child_scope.get("path_params") or {}
+            decision = "allow"
+            try:
+                # P6 phase 1: family-ACL enforcement. Family-scoped tokens
+                # (any ``fam:`` scope) are deny-by-default: GET/HEAD on a
+                # ticket outside the scopes is 404 hidden; a mutation needs
+                # ``fam:<family>:write`` (403 family_denied). Legacy tokens
+                # (no fam: scopes) are unrestricted; external-realm viewers
+                # keep their grant-filtered path.
+                fam_scopes = _fam_scopes(viewer)
+                if (fam_scopes is not None and viewer.realm == "internal"
+                        and params.get("ticket_id")):
+                    facl = get_family_acl()
+                    ticket = get_store().get(params["ticket_id"])
+                    if request.method in ("GET", "HEAD", "OPTIONS"):
+                        if ticket is None or facl.read_visible(
+                                fam_scopes, ticket) is False:
+                            _audit(viewer, request.method, path, 404, "hidden")
+                            return _not_found_response()
+                    else:
+                        if ticket is None or not facl.write_allowed(
+                                fam_scopes, ticket):
+                            decision = "deny"
+                            _audit(viewer, request.method, path, 403, decision)
+                            return _error(
+                                403, "family_denied",
+                                "token has no write scope on this ticket's "
+                                "family")
+                if viewer.realm == "external":
+                    if policy == "authenticated":
+                        pass  # session/UI plumbing only (e.g. /logout)
+                    elif policy == "internal":
+                        _audit(viewer, request.method, path, 404, "hidden")
+                        return _not_found_response()
+                    elif policy == "internal_write_ticket":
+                        tid = params.get("ticket_id", "")
+                        if external_reader(request).ticket_visible(tid):
+                            decision = "deny"
+                            _audit(viewer, request.method, path, 403, decision)
+                            return _error(403, "forbidden",
+                                          "external viewers may not write")
+                        _audit(viewer, request.method, path, 404, "hidden")
+                        return _not_found_response()
+                    elif policy == "internal_write_wiki":
+                        if external_reader(request).page_visible(
+                                params.get("slug", "")):
+                            decision = "deny"
+                            _audit(viewer, request.method, path, 403, decision)
+                            return _error(403, "forbidden",
+                                          "external viewers may not write")
+                        _audit(viewer, request.method, path, 404, "hidden")
+                        return _not_found_response()
+                    elif policy == "internal_write":
+                        _audit(viewer, request.method, path, 403, "deny")
+                        return _error(403, "forbidden",
+                                      "external viewers may not write")
+                    # external_read: the handler serves from ExternalReader.
+                # Amendment A1: a body actor that differs from the effective
+                # actor is a 403 actor_mismatch, enforced in acting() when the
+                # handler passes its parsed body actor — the middleware NEVER
+                # reads the request body (fix-round §1). Visibility/404 checks
+                # run before the handlers, so a mismatch on a hidden object
+                # stays a 404.
+                response = await call_next(request)
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, dict) else {
+                    "code": "error", "message": str(exc.detail)}
+                decision = "hidden" if exc.status_code == 404 \
+                    else ("deny" if exc.status_code in (401, 403) else "allow")
+                _audit(viewer, request.method, path, exc.status_code, decision)
+                return JSONResponse({"error": detail},
+                                    status_code=exc.status_code)
+            _audit(viewer, request.method, path, response.status_code,
+                   decision)
+            return response
+
+        # ---- session routes (public; contract §3) --------------------------
+
+        def _secure(request: Request) -> bool:
+            if request.url.scheme == "https":
+                return True
+            fwd = request.headers.get("x-forwarded-proto", "")
+            return fwd.split(",")[0].strip().lower() == "https"
+
+        @app.get("/login", include_in_schema=False)
+        def login_page():
+            return Response(_LOGIN_HTML, media_type="text/html")
+
+        @app.post("/session", status_code=204, include_in_schema=False)
+        async def session_start(request: Request):
+            body = await _read_json_body(request)
+            token = (body or {}).get("token")
+            viewer = get_access().viewer_for_token(token) \
+                if isinstance(token, str) and token else None
+            if viewer is None:
+                raise HTTPException(
+                    status_code=401,
+                    detail={"code": "unauthorized",
+                            "message": "invalid token"})
+            response = Response(status_code=204)
+            response.set_cookie(
+                SESSION_COOKIE, token, httponly=True, samesite="strict",
+                path="/", secure=_secure(request))
+            return response
+
+        @app.post("/logout", status_code=204, include_in_schema=False)
+        def session_logout():
+            response = Response(status_code=204)
+            response.delete_cookie(SESSION_COOKIE, path="/")
+            return response
+
     # ---- Tickets ----------------------------------------------------------
 
     @app.post("/tickets", status_code=201)
-    def create_ticket(req: TicketCreate):
-        owner = normalize_actor(req.owner)
+    def create_ticket(req: TicketCreate, request: Request):
+        viewer = getattr(request.state, "viewer", None)
+        if req.parent is not None and get_store().get(req.parent) is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "not_found",
+                        "message": f"Ticket {req.parent} not found"},
+            )
+        # Fix-round §2: validate before any owner/privilege lookup, auth on or
+        # off (unsupported label -> 400 label_unsupported for every caller).
+        # Auth off keeps the legacy store shape: no label key when absent.
+        if req.label is None and viewer is None:
+            label = None
+        else:
+            label = check_publish_label(request, req.label)
+        # I1 fail closed (decision 2026-11-12): an explicit owner OBJECT on
+        # ticket creation must carry a valid actor kind — a missing/NULL kind
+        # is rejected (missing_actor_kind), never defaulted, and an unknown
+        # kind is rejected (unknown_actor_kind). Bare-string owners keep the
+        # pre-P1 auth-off legacy free-form name shape (no kind field to
+        # validate; the acting viewer path covers auth-on identity).
+        if req.owner is not None and isinstance(req.owner, dict):
+            owner_kind = req.owner.get("kind")
+            if owner_kind is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "missing_actor_kind",
+                            "message": "owner actor kind is required on "
+                                       "ticket creation (expected one of "
+                                       f"{sorted(ACTOR_KINDS)})"})
+            if owner_kind not in ACTOR_KINDS:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "unknown_actor_kind",
+                            "message": f"unknown actor kind: {owner_kind!r} "
+                                       f"(expected one of "
+                                       f"{sorted(ACTOR_KINDS)})"})
+        actor, via = acting(request, _UNSET)
+        owner = actor
+        if req.owner is not None and viewer is not None:
+            claimed = normalize_actor(req.owner)
+            store = get_store()
+            # CONTRACT-GAP: StoreGateway surfaces no get_actor for the raw
+            # Actor; read it through the underlying store instead of adding
+            # a gateway method.
+            inner = getattr(store, "_store", store)
+            stored = inner.get_actor(claimed["id"]) \
+                if hasattr(inner, "get_actor") else None
+            attrs = get_access().actor_attrs(claimed["id"])
+            if attrs is None or attrs.get("realm") != "internal" \
+                    or stored is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "bad_request",
+                            "message": f"owner {claimed['id']!r} is not an "
+                                       "existing internal actor"})
+            owner = stored
+        elif req.owner is not None:
+            owner = normalize_actor(req.owner)  # auth off: legacy shape
         families = list(req.families)
-        if not families and owner.get("family") and owner["family"] != "unknown":
-            families = [owner["family"]]
+        owner_family = getattr(owner, "family", None) or \
+            (owner.get("family") if isinstance(owner, dict) else "unknown")
+        if not families and owner_family and owner_family != "unknown":
+            families = [owner_family]
+        # P6 phase 1: a family-scoped writer may only create tickets inside
+        # its write families (fail closed when the resolved list is empty).
+        if viewer is not None and viewer.realm == "internal":
+            fam_scopes = _fam_scopes(viewer)
+            if fam_scopes is not None:
+                write_fams = {f for f, acts in fam_scopes.items()
+                              if "write" in acts}
+                if not write_fams & set(families):
+                    raise HTTPException(
+                        status_code=403,
+                        detail={"code": "family_denied",
+                                "message": "token has no write scope on the "
+                                           "ticket's families"})
+        store = get_store()
+        kwargs = {}
+        # Fix-round §3: explicit capability checks, never a TypeError retry.
+        if _supports_kwarg(store.create_ticket, "via"):
+            kwargs["via"] = via
+        if label is not None and viewer is None:
+            # auth off with an explicit label (check_publish_label already ran
+            # — a supported label): an explicit label on a store that cannot
+            # record it is a 400 bad_request, never TypeError/500 or a silent
+            # drop.
+            if not _supports_kwarg(store.create_ticket, "label"):
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "bad_request",
+                            "message": "label not supported by this store"})
+        elif (label is not None or viewer is not None) \
+                and _supports_kwarg(store.create_ticket, "label"):
+            # auth on (label resolved to at least "internal"), on a store
+            # that can record it.
+            kwargs["label"] = label
+        if not kwargs and not hasattr(store, "get_actor"):
+            # CONTRACT-GAP: FakeStore (no get_actor) is the auth-off test
+            # double; keep its exact legacy create_ticket call shape there.
+            return get_store().create_ticket(
+                title=req.title,
+                body=req.body,
+                parent=req.parent,
+                owner=owner,
+                tags=list(req.tags),
+                families=families,
+                priority=req.priority,
+                external_refs=dict(req.external_refs),
+            )
         return get_store().create_ticket(
             title=req.title,
             body=req.body,
@@ -269,22 +919,46 @@ def create_app(store: Any = None) -> FastAPI:
             families=families,
             priority=req.priority,
             external_refs=dict(req.external_refs),
+            **kwargs,
         )
 
     @app.get("/tickets")
-    def list_tickets(status: Optional[str] = None, family: Optional[str] = None,
+    def list_tickets(request: Request, status: Optional[str] = None,
+                     family: Optional[str] = None,
                      tag: Optional[str] = None, q: Optional[str] = None):
+        viewer = getattr(request.state, "viewer", None)
+        if viewer is not None and viewer.realm == "external":
+            return external_reader(request).list_tickets(
+                status=status, tag=tag, q=q)
         if status:
             status = _canon_status(status)
         tickets = get_store().list(status=status, family=family, tag=tag, q=q)
+        # P6 phase 1: deny-by-default family scoping on the list — a
+        # family-scoped viewer sees only the tickets its scopes admit.
+        if viewer is not None and viewer.realm == "internal":
+            fam_scopes = _fam_scopes(viewer)
+            if fam_scopes is not None:
+                facl = get_family_acl()
+                tickets = [t for t in tickets
+                           if facl.read_visible(fam_scopes, t) is True]
         return list(tickets)
 
     @app.get("/tickets/{ticket_id}")
-    def get_ticket(ticket_id: str):
+    def get_ticket(ticket_id: str, request: Request):
+        viewer = getattr(request.state, "viewer", None)
+        if viewer is not None and viewer.realm == "external":
+            ext = external_reader(request).get_ticket(ticket_id)
+            if ext is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"code": "not_found",
+                            "message": f"Ticket {ticket_id} not found"},
+                )
+            return ext
         return get_ticket_or_404(ticket_id)
 
     @app.patch("/tickets/{ticket_id}")
-    def patch_ticket(ticket_id: str, req: TicketPatch):
+    def patch_ticket(ticket_id: str, req: TicketPatch, request: Request):
         if req.status is not None:
             req.status = _canon_status(req.status)
         fields = {k: v for k, v in
@@ -295,33 +969,106 @@ def create_app(store: Any = None) -> FastAPI:
             raise HTTPException(status_code=400,
                                 detail={"code": "bad_request",
                                         "message": "No fields to update"})
-        actor = normalize_actor(req.actor)
-        return get_store().patch(ticket_id, actor=actor, **fields)
+        actor, via = acting(request, req.actor)
+        store = get_store()
+        if viewer_is_off(request):
+            # auth off: exactly the pre-P1 call shape.
+            return store.patch(ticket_id, actor=actor, **fields)
+        return store.patch(ticket_id, actor=actor, via=via, **fields)
+
+    @app.delete("/tickets/{ticket_id}")
+    def delete_ticket(ticket_id: str, request: Request):
+        """S4 (buglist 2026-11-14): remove a ticket.
+
+        Auth: WRITE-class bearer, reusing the SEV scoping lane's gate (the
+        auth pipeline already demands token ∈ TICKET_HUB_WRITE_TOKENS for
+        every non-GET; see api.py "Write-token scoping"). DELETE inherits
+        that check by virtue of being a mutation — no separate gate here.
+        Tombstone soft-delete in the store (events stay append-only).
+        """
+        actor, via = acting(request, None)
+        store = get_store()
+        if viewer_is_off(request):
+            # auth off: legacy call shape (no via)
+            return store.delete_ticket(ticket_id, actor=actor)
+        return store.delete_ticket(ticket_id, actor=actor, via=via)
 
     @app.get("/tickets/{ticket_id}/events")
-    def list_events(ticket_id: str):
+    def list_events(ticket_id: str, request: Request):
+        viewer = getattr(request.state, "viewer", None)
+        if viewer is not None and viewer.realm == "external":
+            events = external_reader(request).events(ticket_id)
+            if events is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"code": "not_found",
+                            "message": f"Ticket {ticket_id} not found"},
+                )
+            return events
         get_ticket_or_404(ticket_id)
         return get_store().timeline(ticket_id)
 
     @app.post("/tickets/{ticket_id}/events", status_code=201)
-    def append_event(ticket_id: str, req: EventCreate):
+    def append_event(ticket_id: str, req: EventCreate, request: Request):
         get_ticket_or_404(ticket_id)
         if req.kind not in EVENT_KINDS:
             raise HTTPException(status_code=400,
                                 detail={"code": "bad_request",
                                         "message": f"Unknown event kind: {req.kind}"})
-        actor = normalize_actor(req.actor)
-        return get_store().append_event(ticket_id, kind=req.kind, actor=actor,
-                                        payload=dict(req.payload))
+        store = get_store()
+        # Fix-round §2/§3: validate the label first (check_label below via
+        # the ValueError envelope), and an explicit label on a store that
+        # cannot record it is a 400 — never TypeError/500 or a silent drop.
+        # Only when no label was given may the legacy call shape be used.
+        if req.label is not None:
+            check_label(req.label)  # ValueError -> 400 label_unsupported
+            if not _store_supports_labels():
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "bad_request",
+                            "message": "label not supported by this store"})
+        actor, via = acting(request, req.actor)
+        kwargs = {}
+        if _supports_kwarg(store.append_event, "via"):
+            kwargs["via"] = via
+        if req.label is not None:
+            # explicit label only (support proven by the gate above); a
+            # label=None kwarg would defeat check_label defaults in the store.
+            kwargs["label"] = req.label
+        return store.append_event(ticket_id, kind=req.kind, actor=actor,
+                                  payload=dict(req.payload), **kwargs)
+
+    @app.post("/tickets/{ticket_id}/label", status_code=200)
+    def set_ticket_label_ep(ticket_id: str, req: LabelUpdate,
+                            request: Request):
+        from ticket_hub.model import check_label
+        ticket = get_ticket_or_404(ticket_id)
+        check_label(req.label)  # Fix-round §2: ValueError -> 400 label_unsupported
+        current = ticket.get("label") or "internal"  # legacy stores: no key
+        if LABEL_RANK[req.label] < LABEL_RANK[current]:
+            require_owner(request)
+        actor, via = acting(request, _UNSET)
+        store = get_store()
+        if not hasattr(store, "set_ticket_label"):
+            # Fix-round §3: a store that cannot record labels -> 400, never
+            # TypeError/500. (No silent drop: a label change was requested.)
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "bad_request",
+                        "message": "label not supported by this store"})
+        return store.set_ticket_label(ticket_id, req.label,
+                                      actor=actor, reason=req.reason,
+                                      via=via)
 
     @app.post("/tickets/{ticket_id}/edges", status_code=201)
-    def add_edge(ticket_id: str, req: EdgeCreate):
+    def add_edge(ticket_id: str, req: EdgeCreate, request: Request):
         get_ticket_or_404(ticket_id)
         if req.type not in EDGE_TYPES:
             raise HTTPException(status_code=400,
                                 detail={"code": "bad_request",
                                         "message": f"Unknown edge type: {req.type}"})
         get_ticket_or_404(req.dst)
+        actor, via = acting(request, _UNSET)  # identity/visibility gate (auth on)
         # API-level cycle guard (the store also guards; defense in depth).
         if req.type in CYCLE_EDGE_TYPES:
             store = get_store()
@@ -333,7 +1080,11 @@ def create_app(store: Any = None) -> FastAPI:
                     detail={"code": "cycle_rejected",
                             "message": "Edge would create a cycle"},
                 )
-        return get_store().add_edge(ticket_id, req.dst, req.type, dict(req.meta))
+        store = get_store()
+        kwargs = ({"via": via}
+                  if _supports_kwarg(store.add_edge, "via") else {})
+        return store.add_edge(ticket_id, req.dst, req.type, dict(req.meta),
+                              **kwargs)
 
     # ---- Projections ------------------------------------------------------
 
@@ -418,17 +1169,28 @@ def create_app(store: Any = None) -> FastAPI:
                 "parents": parents}
 
     @app.get("/health")
-    def health():
+    def health(request: Request):
         """Last-known health written by scripts/healthcheck.sh (monitor
-        surface per GLM review: a FAIL must be visible between checks)."""
+        surface per GLM review: a FAIL must be visible between checks).
+        With auth on the body is reduced to {"ok": bool} (contract §3)."""
+        if auth_on:
+            path = os.environ.get("TICKET_HUB_HEALTH_STATUS",
+                                  hub_path("health-status.json"))
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except (OSError, ValueError):
+                data = {}
+            return {"ok": bool(data.get("ok"))}
         path = os.environ.get("TICKET_HUB_HEALTH_STATUS",
                               hub_path("health-status.json"))
         try:
             with open(path, encoding="utf-8") as fh:
-                return json.load(fh)
+                data = json.load(fh)
         except (OSError, ValueError):
             return {"ok": True, "ts": None, "last_error": None,
                     "note": "no healthcheck has run yet"}
+        return data
 
     def _read_json_file(path: str) -> dict | None:
         try:
@@ -586,22 +1348,25 @@ def create_app(store: Any = None) -> FastAPI:
         return get_seat_router().roster()
 
     @app.post("/tickets/{ticket_id}/assign", status_code=201)
-    def assign_seat(ticket_id: str, req: AssignCreate):
+    def assign_seat(ticket_id: str, req: AssignCreate, request: Request):
         get_ticket_or_404(ticket_id)
         from seats import SeatError
+        actor, _via = acting(request, req.actor)
+        actor_dict = _actor_as_dict(actor)
         try:
             return get_seat_router().assign(
                 ticket_id, role=req.role, seat=req.seat,
-                actor=normalize_actor(req.actor))
+                actor=actor_dict)
         except SeatError as e:
             raise HTTPException(status_code=409,
                                 detail={"code": e.code, "message": e.message})
 
     @app.post("/tickets/{ticket_id}/release")
-    def release_seat(ticket_id: str, req: ReleaseCreate):
+    def release_seat(ticket_id: str, req: ReleaseCreate, request: Request):
         get_ticket_or_404(ticket_id)
+        actor, _via = acting(request, req.actor)
         return get_seat_router().release(ticket_id,
-                                         actor=normalize_actor(req.actor))
+                                         actor=_actor_as_dict(actor))
 
     @app.get("/tickets/{ticket_id}/assignment")
     def ticket_assignment(ticket_id: str):
@@ -632,12 +1397,14 @@ def create_app(store: Any = None) -> FastAPI:
                                 detail={"code": e.code, "message": e.message})
 
     @app.post("/templates/{name}/instantiate", status_code=201)
-    def template_instantiate(name: str, req: InstantiateCreate):
+    def template_instantiate(name: str, req: InstantiateCreate,
+                             request: Request):
         from templates import instantiate, TemplateError
+        actor, _via = acting(request, req.actor)
         try:
             return instantiate(get_store(), get_seat_router(), name,
                                req.title, parent=req.parent,
-                               actor=normalize_actor(req.actor),
+                               actor=_actor_as_dict(actor),
                                assign=req.assign)
         except TemplateError as e:
             raise HTTPException(status_code=404,
@@ -646,15 +1413,20 @@ def create_app(store: Any = None) -> FastAPI:
     # ---- Threads / chat bridges ------------------------------------------
 
     @app.post("/tickets/{ticket_id}/bind", status_code=201)
-    def bind_thread(ticket_id: str, req: BindCreate):
+    def bind_thread(ticket_id: str, req: BindCreate, request: Request):
         get_ticket_or_404(ticket_id)
         if req.platform not in PLATFORMS:
             raise HTTPException(status_code=400,
                                 detail={"code": "bad_request",
                                         "message": f"Unknown platform: {req.platform}"})
-        return get_store().bind_thread(
+        actor, via = acting(request, _UNSET)  # identity gate (auth on)
+        store = get_store()
+        kwargs = ({"via": via}
+                  if _supports_kwarg(store.bind_thread, "via") else {})
+        return store.bind_thread(
             ticket_id, platform=req.platform, room_id=req.room_id,
             thread_id=req.thread_id, root_msg_id=req.root_msg_id,
+            **kwargs,
         )
 
     @app.get("/tickets/{ticket_id}/bindings")
@@ -668,11 +1440,12 @@ def create_app(store: Any = None) -> FastAPI:
         return list(store.list_bindings(ticket_id))
 
     @app.post("/adapters/{platform}/inbound")
-    def adapter_inbound(platform: str, req: InboundMessage):
+    def adapter_inbound(platform: str, req: InboundMessage, request: Request):
         if platform not in PLATFORMS:
             raise HTTPException(status_code=400,
                                 detail={"code": "bad_request",
                                         "message": f"Unknown platform: {platform}"})
+        actor, via = acting(request, req.actor)
         store = get_store()
         if not hasattr(store, "get_binding"):
             raise HTTPException(status_code=501,
@@ -686,20 +1459,22 @@ def create_app(store: Any = None) -> FastAPI:
                 detail={"code": "not_found",
                         "message": f"No thread binding for {platform} room {req.room_id}"},
             )
-        actor = normalize_actor(req.actor)
-        event = store.append_event(
-            binding["ticket_id"],
-            kind="thread_message",
-            actor=actor,
-            payload={
-                "platform": platform,
-                "room_id": req.room_id,
-                "thread_id": req.thread_id,
-                "root_msg_id": req.root_msg_id,
-                "text": req.text,
-                "chat_actor": actor.get("name"),
-            },
-        )
+        actor_dict = _actor_as_dict(actor)
+        payload = {
+            "platform": platform,
+            "room_id": req.room_id,
+            "thread_id": req.thread_id,
+            "root_msg_id": req.root_msg_id,
+            "text": req.text,
+            "chat_actor": actor_dict.get("name"),
+        }
+        kwargs = ({"via": via}
+                  if _supports_kwarg(store.append_event, "via") else {})
+        event = store.append_event(binding["ticket_id"],
+                                   kind="thread_message",
+                                   actor=actor_dict,
+                                   payload=payload,
+                                   **kwargs)
         # Reply-posts-back is Lane C (adapters/) territory; inert in v0.
         return {"event": event, "posted": False}
 
@@ -716,8 +1491,13 @@ def create_app(store: Any = None) -> FastAPI:
         return page
 
     @app.get("/wiki")
-    def list_wiki():
+    def list_wiki(request: Request):
         """Index: latest revision per slug (slim, no body)."""
+        viewer = getattr(request.state, "viewer", None)
+        if viewer is not None and viewer.realm == "external":
+            return [{"slug": p["slug"], "title": p["title"], "tags": [],
+                     "rev": p["rev"], "ts": p["ts"]}
+                    for p in external_reader(request).list_pages()]
         pages = get_store().list_pages()
         return [
             {"slug": p.get("slug"), "title": p.get("title"),
@@ -727,9 +1507,14 @@ def create_app(store: Any = None) -> FastAPI:
         ]
 
     @app.get("/wiki-search")
-    def search_wiki(q: str = ""):
+    def search_wiki(request: Request, q: str = ""):
         """Case-insensitive substring match on title/body/tags of the
         latest revision; returns slug/title/snippet."""
+        viewer = getattr(request.state, "viewer", None)
+        if viewer is not None and viewer.realm == "external":
+            return [{"slug": p["slug"], "title": p["title"],
+                     "snippet": (p.get("body_md") or "")[:200]}
+                    for p in external_reader(request).search_pages(q)]
         store = get_store()
         if not hasattr(store, "search_pages"):
             raise HTTPException(status_code=501,
@@ -744,8 +1529,23 @@ def create_app(store: Any = None) -> FastAPI:
         return results
 
     @app.get("/wiki/{slug}")
-    def get_wiki(slug: str):
+    def get_wiki(slug: str, request: Request):
         """Full latest page + slim history (all revisions, no bodies)."""
+        viewer = getattr(request.state, "viewer", None)
+        if viewer is not None and viewer.realm == "external":
+            reader = external_reader(request)
+            page = reader.get_page(slug)
+            if page is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"code": "not_found",
+                            "message": f"Wiki page {slug} not found"},
+                )
+            history = [{"slug": h["slug"], "rev": h["rev"],
+                        "title": h["title"], "tags": [],
+                        "actor": "", "ts": h["ts"]}
+                       for h in (reader.page_history(slug) or [])]
+            return {"page": page, "history": history}
         page = _wiki_or_404(slug)
         history = [
             {"slug": h.get("slug"), "rev": h.get("rev"),
@@ -756,10 +1556,68 @@ def create_app(store: Any = None) -> FastAPI:
         return {"page": page, "history": history}
 
     @app.post("/wiki/{slug}", status_code=201)
-    def put_wiki(slug: str, req: WikiPageCreate):
-        return get_store().put_page(
+    def put_wiki(slug: str, req: WikiPageCreate, request: Request):
+        viewer = getattr(request.state, "viewer", None)
+        # Fix-round §2/§3: validate the label before any privilege lookup
+        # (auth on or off); auth off with no label keeps the legacy store
+        # call shape.
+        if req.label is None and viewer is None:
+            label = None
+        else:
+            label = check_publish_label(request, req.label)
+        actor, _via = acting(request, req.actor)
+        store = get_store()
+        if label is None and not _store_supports_labels():
+            # CONTRACT-GAP: FakeStore.put_page takes no label=; with no label
+            # requested the pre-P1 call shape is preserved there.
+            return store.put_page(slug, title=req.title, body_md=req.body_md,
+                                  tags=list(req.tags), actor=actor)
+        # Fix-round §3: FakeStore.put_page takes no label=; an explicit label
+        # on a store that cannot record it is a bad request, never a
+        # TypeError/500 or a silent drop.
+        if label is not None and not _store_supports_labels():
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "bad_request",
+                        "message": "label not supported by this store"})
+        return store.put_page(
             slug, title=req.title, body_md=req.body_md,
-            tags=list(req.tags), actor=req.actor)
+            tags=list(req.tags), actor=actor, label=label)
+
+    @app.post("/wiki/{slug}/label", status_code=200)
+    def set_wiki_label(slug: str, req: LabelUpdate, request: Request):
+        """Label change = a NEW revision with the same title/body/tags and
+        the new label (wiki rows are append-only). Lowering requires owner;
+        raising is allowed for any internal writer."""
+        from ticket_hub.model import check_label
+        check_label(req.label)  # Fix-round §2: validate before any lookup
+        page = _wiki_or_404(slug)
+        current = page.get("label") or "internal"
+        if LABEL_RANK[req.label] < LABEL_RANK[current]:
+            require_owner(request)
+        actor, _via = acting(request, _UNSET)
+        store = get_store()
+        if not hasattr(store, "put_page"):
+            raise HTTPException(status_code=501,
+                                detail={"code": "unsupported",
+                                        "message": "Store does not expose wiki"})
+        if req.label != current and not _supports_kwarg(store.put_page,
+                                                        "label"):
+            # Fix-round §3: FakeStore.put_page takes no label=; a real label
+            # change cannot be recorded there -> 400, never TypeError/501.
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "bad_request",
+                        "message": "label not supported by this store"})
+        # A no-op relabel on a label-less store changes nothing: return the
+        # unchanged page rather than passing an unsupported label=.
+        if req.label == current and not _supports_kwarg(store.put_page,
+                                                        "label"):
+            return page
+        return store.put_page(
+            slug, title=page["title"], body_md=page.get("body_md", ""),
+            tags=list(page.get("tags") or []), actor=actor,
+            label=req.label)
     # ---- Roles (v2 pillar 3) ----------------------------------------------
 
     def _load_registry() -> dict:
@@ -808,6 +1666,12 @@ def create_app(store: Any = None) -> FastAPI:
     from jobs_api import register_jobs_routes
     register_jobs_routes(app, get_store)
 
+    # Aerial Tickets product: POST /records, POST /identity, /operator
+    # (docs/DESIGN-aerial-tickets.md). Registered before check_policies.
+    from rlai_api import register_rlai_routes
+    register_rlai_routes(app, get_store, get_access,
+                         session_cookie=SESSION_COOKIE)
+
     # ---- UI ----------------------------------------------------------------
 
     @app.get("/", include_in_schema=False)
@@ -815,6 +1679,11 @@ def create_app(store: Any = None) -> FastAPI:
         return FileResponse(os.path.join(UI_DIR, "index.html"))
 
     app.mount("/ui", StaticFiles(directory=UI_DIR), name="ui")
+
+    # ---- policy completeness (contract §3): raise on a gap ------------------
+
+    if auth_on:
+        check_policies(app)
 
     return app
 

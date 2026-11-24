@@ -22,6 +22,10 @@ import urllib.request
 DEFAULT_BASE_URL = "http://127.0.0.1:8777"
 DEFAULT_TIMEOUT = 30.0
 
+#: env naming the file that holds this client's hub bearer token
+#: (ACCESS-P1-CONTRACT §4). The file is read AT CALL TIME, never cached.
+HUB_TOKEN_FILE_ENV = "HUB_TOKEN_FILE"
+
 
 class HubError(Exception):
     """Raised on any API error envelope or non-2xx response.
@@ -35,6 +39,37 @@ class HubError(Exception):
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+
+
+def bearer_header(env=None) -> dict:
+    """Return ``{"Authorization": "Bearer <token>"}`` for one call.
+
+    The token is read AT CALL TIME from the file named by env
+    ``HUB_TOKEN_FILE`` (whitespace stripped). Variable unset -> {} (no
+    header). Unreadable or empty file -> HubError("token_unavailable") whose
+    message names HUB_TOKEN_FILE but never contains the file contents or the
+    token itself. Importable by any stdlib-only module (outbound, scripts).
+    """
+    env = os.environ if env is None else env
+    path = env.get(HUB_TOKEN_FILE_ENV)
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            token = fh.read().strip()
+    except OSError:
+        raise HubError(
+            "token_unavailable",
+            f"cannot read the hub bearer token from the file named by "
+            f"{HUB_TOKEN_FILE_ENV} ({path})",
+        ) from None
+    if not token:
+        raise HubError(
+            "token_unavailable",
+            f"the hub bearer token file named by {HUB_TOKEN_FILE_ENV} "
+            f"({path}) is empty",
+        )
+    return {"Authorization": f"Bearer {token}"}
 
 
 class HubClient:
@@ -58,6 +93,7 @@ class HubClient:
                 url += "?" + urllib.parse.urlencode(clean)
         data = None
         headers = {"Accept": "application/json"}
+        headers.update(bearer_header())  # read at call time (HUB_TOKEN_FILE)
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"

@@ -26,7 +26,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["ticket_hub", "ticket_hub.adapters"]
-py-modules = ["api", "hub_cli", "hub_client", "hub_gateway", "outbound"]
+py-modules = ["api", "hub_cli", "hub_client", "hub_gateway", "outbound", "rlai_api"]
 
 [tool.ruff]
 line-length = 100

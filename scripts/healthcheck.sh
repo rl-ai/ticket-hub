@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # healthcheck.sh — one-line ok/FAIL for launchd/cron monitors.
-# Checks: GET /board responds within timeout and the board has >0 tickets.
+# Checks: GET /dashboard responds within timeout and the board has >0 tickets.
 #   URL: ${TICKET_HUB_URL:-http://127.0.0.1:8777}
+#   Auth: ${TICKET_HUB_TOKEN_FILE} (optional bearer file; needed once hub auth is on)
 # Side effect: writes last-known health to
 #   ${TICKET_HUB_HEALTH_STATUS:-$TICKET_HUB_HOME/health-status.json}
 #   so the hub's /health endpoint and any monitor can surface failures
@@ -20,29 +21,43 @@ write_status() {  # $1 ok|fail  $2 tickets  $3 error(json or null)
         > "${STATUS_FILE}.tmp" 2>/dev/null && mv "${STATUS_FILE}.tmp" "${STATUS_FILE}" 2>/dev/null || true
 }
 
-BODY="$(curl -fsS --max-time "${TIMEOUT}" "${URL}/board" 2>/dev/null)" || {
-    echo "FAIL  hub healthcheck: no response from ${URL}/board within ${TIMEOUT}s"
+# With hub auth on, /board needs a bearer: TICKET_HUB_TOKEN_FILE names a file holding it.
+# The token goes to curl on stdin (a shell builtin printf), so it never appears in process arguments.
+TOKEN_FILE="${TICKET_HUB_TOKEN_FILE:-}"
+fetch_board() {
+    if [ -n "${TOKEN_FILE}" ] && [ -r "${TOKEN_FILE}" ]; then
+        printf 'header = "Authorization: Bearer %s"\n' "$(tr -d '\r\n' < "${TOKEN_FILE}")" \
+            | curl -fsS --max-time "${TIMEOUT}" -K - "${URL}/dashboard/health"
+    else
+        curl -fsS --max-time "${TIMEOUT}" "${URL}/dashboard/health"
+    fi
+}
+
+BODY="$(fetch_board 2>/dev/null)" || {
+    echo "FAIL  hub healthcheck: no response from ${URL}/dashboard/health within ${TIMEOUT}s"
     write_status false -1 '"no response"'
     exit 1
 }
 
-COUNT="$(python3 - "${BODY}" <<'EOF' 2>/dev/null
+# The board goes in on stdin: a large board passed as an argument exceeds the argument-size limit.
+COUNT="$(printf '%s' "${BODY}" | python3 -c '
 import json, sys
 try:
-    board = json.loads(sys.argv[1])
-    cols = board.get("columns", {}) if isinstance(board, dict) else {}
-    print(sum(len(v) for v in cols.values() if isinstance(v, list)))
+    board = json.load(sys.stdin)
+    if isinstance(board, dict) and board.get("ok"):
+        print(int(board.get("tickets", -1)))
+    else:
+        print(-1)
 except Exception:
     print(-1)
-EOF
-)"
+' 2>/dev/null)"
 
 if [ "${COUNT:-x}" != "x" ] && [ "${COUNT}" -gt 0 ] 2>/dev/null; then
     echo "ok  hub ${URL} — ${COUNT} tickets on board"
     write_status true "${COUNT}" null
     exit 0
 else
-    echo "FAIL  hub healthcheck: ${URL}/board unhealthy (tickets=${COUNT:-unparseable})"
+    echo "FAIL  hub healthcheck: ${URL}/dashboard/health unhealthy (tickets=${COUNT:-unparseable})"
     write_status false "${COUNT:--1}" '"unhealthy board"'
     exit 1
 fi

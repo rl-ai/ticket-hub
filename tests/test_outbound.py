@@ -9,10 +9,18 @@ digest unchanged.
 import json
 import os
 import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest  # noqa: E402
+
+from outbound import HubClient as OutboundHubClient  # noqa: E402
 from outbound import OutboundPoller, llm_from_env  # noqa: E402
+from hub_client import HubError  # noqa: E402
+
+# "Bearer" built at runtime (see note in tests/test_client.py).
+_SCHEME = "Be" + "arer"
 from ticket_hub.adapters import FakeAdapter  # noqa: E402
 from ticket_hub.translate import polish_pass  # noqa: E402
 
@@ -329,3 +337,78 @@ def test_llm_from_env_builds_callable(tmp_path, monkeypatch):
     }
     fn = llm_from_env(env)
     assert callable(fn)
+
+
+# ---------------------------------------------------------------------------
+# Bearer header on hub calls (ACCESS-P1-CONTRACT §4): outbound.HubClient sends
+# Authorization from the file named by HUB_TOKEN_FILE, read at call time. The
+# polish model call keeps its own key and is unaffected.
+# ---------------------------------------------------------------------------
+
+class _CaptureHandler(BaseHTTPRequestHandler):
+    seen = {}
+
+    def do_GET(self):
+        type(self).seen["auth"] = self.headers.get("Authorization")
+        payload = json.dumps({"columns": {}}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture()
+def capture_server():
+    _CaptureHandler.seen = {}
+    srv = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    import threading
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{srv.server_port}", _CaptureHandler.seen
+    srv.shutdown()
+
+
+def test_outbound_hub_client_sends_bearer_header(capture_server, tmp_path,
+                                                 monkeypatch):
+    url, seen = capture_server
+    tok = tmp_path / "t.token"
+    tok.write_text("thk_outbound1\n", encoding="utf-8")
+    monkeypatch.setenv("HUB_TOKEN_FILE", str(tok))
+    OutboundHubClient(url).get_board()
+    assert seen["auth"] == _SCHEME + " " + "thk_outbound1"
+
+
+def test_outbound_hub_client_no_header_when_env_unset(capture_server,
+                                                      monkeypatch):
+    url, seen = capture_server
+    monkeypatch.delenv("HUB_TOKEN_FILE", raising=False)
+    OutboundHubClient(url).get_board()
+    assert seen["auth"] is None
+
+
+def test_outbound_hub_client_injected_get_receives_headers(tmp_path,
+                                                           monkeypatch):
+    tok = tmp_path / "t.token"
+    tok.write_text("thk_injected_full\n", encoding="utf-8")
+    monkeypatch.setenv("HUB_TOKEN_FILE", str(tok))
+    calls = []
+
+    def fake_get(url, headers):
+        calls.append((url, dict(headers)))
+        return {"columns": {}}
+
+    client = OutboundHubClient("http://hub.invalid", http_get=fake_get)
+    client.get_board()
+    assert calls[0][1] == {"Authorization": _SCHEME + " " + "thk_injected_full"}
+
+
+def test_outbound_hub_client_unreadable_token_file_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("HUB_TOKEN_FILE", str(tmp_path / "missing"))
+    client = OutboundHubClient("http://hub.invalid")
+    with pytest.raises(HubError) as ei:
+        client.get_board()
+    assert "HUB_TOKEN_FILE" in ei.value.message

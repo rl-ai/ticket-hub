@@ -62,28 +62,46 @@ class StoreGateway:
     def __init__(self, store: Store) -> None:
         self._store = store
 
+    @property
+    def conn(self):
+        """Read-only access to the Store's sqlite3 connection (access lane)."""
+        return self._store._conn
+
     # -- pass-through mutating calls, dict-ifying results ------------------
 
     def create_ticket(self, *, title: str, body: str = "", parent: Optional[str] = None,
                       owner: Any = None, tags: Optional[list] = None,
                       families: Optional[list] = None, priority: str = "normal",
-                      external_refs: Optional[dict] = None, **kw) -> dict:
+                      external_refs: Optional[dict] = None, label: str = "internal",
+                      via: Optional[str] = None, **kw) -> dict:
         return _to_dict(self._store.create_ticket(
             title=title, body=body, parent=parent, owner=_actor(owner),
             tags=list(tags or []), priority=priority,
             families=list(families or []), external_refs=dict(external_refs or {}),
-            **kw))
+            label=label, via=via, **kw))
 
     def patch(self, ticket_id: str, *, actor: Any = None, status: Any = None,
-              **fields) -> dict:
+              via: Optional[str] = None, **fields) -> dict:
         st = coerce_status(status) if status is not None else None
         return _to_dict(self._store.update_ticket(
-            ticket_id, status=st, actor=_actor(actor), **fields))
+            ticket_id, status=st, actor=_actor(actor), via=via, **fields))
+
+    def delete_ticket(self, ticket_id: str, *, actor: Any = None,
+                      via: Optional[str] = None) -> dict:
+        """S4: tombstone-delete a ticket (see Store.delete_ticket)."""
+        return self._store.delete_ticket(ticket_id, actor=_actor(actor), via=via)
 
     def append_event(self, ticket_id: str, kind: str, actor: Any = None,
-                     payload: Optional[dict] = None) -> dict:
+                     payload: Optional[dict] = None, *,
+                     label: Optional[str] = None, via: Optional[str] = None) -> dict:
         return _to_dict(self._store.append_event(
-            ticket_id, kind, actor=_actor(actor), payload=dict(payload or {})))
+            ticket_id, kind, actor=_actor(actor), payload=dict(payload or {}),
+            label=label, via=via))
+
+    def set_ticket_label(self, ticket_id: str, label: str, *, actor: Any,
+                         reason: str = "", via: Optional[str] = None) -> dict:
+        return _to_dict(self._store.set_ticket_label(
+            ticket_id, label, actor=_actor(actor), reason=reason, via=via))
 
     def add_edge(self, src: str, dst: str, type: str,
                  meta: Optional[dict] = None) -> dict:
@@ -131,10 +149,11 @@ class StoreGateway:
     # -- wiki (DESIGN-v2 pillar 1) ------------------------------------------
 
     def put_page(self, slug: str, *, title: str, body_md: str = "",
-                 tags: Optional[list] = None, actor: Any = None) -> dict:
+                 tags: Optional[list] = None, actor: Any = None,
+                 label: Optional[str] = None) -> dict:
         return _to_dict(self._store.put_page(
             slug, title=title, body_md=body_md,
-            tags=list(tags or []), actor=_actor_name(actor)))
+            tags=list(tags or []), actor=_actor_name(actor), label=label))
 
     def get_page(self, slug: str) -> Optional[dict]:
         return _to_dict(self._store.get_page(slug))

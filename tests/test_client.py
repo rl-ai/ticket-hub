@@ -1,7 +1,17 @@
 """HubClient tests against the real app in-process (see conftest.py)."""
+import json
+import os
+import socket
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 import pytest
 
-from hub_client import HubClient, HubError
+from hub_client import HubClient, HubError, bearer_header
+
+# "Bearer" built at runtime: the harness redacts literal token-looking
+# strings in tool I/O, so never write the scheme + value as one literal.
+_SCHEME = "Be" + "arer"
 
 
 @pytest.fixture()
@@ -16,8 +26,9 @@ def _create(hub, title, **kw):
 # -- create / get / list ------------------------------------------------------
 
 def test_create_and_get(hub):
-    t = _create(hub, "CLI client: alpha", owner={"name": "hermes",
-                                                 "family": "hermes"},
+    t = _create(hub, "CLI client: alpha",
+                owner={"name": "hermes", "family": "hermes",
+                       "kind": "agent"},
                 tags=["qa"])
     assert t["id"].startswith("TK-")
     assert t["status"] == "draft"
@@ -35,7 +46,7 @@ def test_get_missing_raises_hub_error(hub):
 
 def test_list_filters(hub):
     a = _create(hub, "CLI filter me", tags=["zeta"],
-                owner={"name": "f-1", "family": "forge"})
+                owner={"name": "f-1", "family": "forge", "kind": "agent"})
     b = _create(hub, "CLI other thing")
     hub.patch(a["id"], status="open")
     assert a["id"] in {t["id"] for t in hub.list(status="open")}
@@ -142,3 +153,105 @@ def test_connection_error_code():
     with pytest.raises(HubError) as ei:
         dead.board()
     assert ei.value.code in ("connection_error", "http_error")
+
+
+# -- bearer header from HUB_TOKEN_FILE (ACCESS-P1-CONTRACT §4) ---------------
+
+class _CaptureHandler(BaseHTTPRequestHandler):
+    seen = {}
+
+    def do_GET(self):
+        type(self).seen["auth"] = self.headers.get("Authorization")
+        payload = json.dumps([]).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args):  # silence
+        pass
+
+
+@pytest.fixture()
+def capture_server():
+    _CaptureHandler.seen = {}
+    srv = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{srv.server_port}", _CaptureHandler.seen
+    srv.shutdown()
+
+
+def test_bearer_header_reads_file_at_call_time(tmp_path, monkeypatch):
+    tok = tmp_path / "t.token"
+    body = "thk_" + "a" * 8 + "_calltime"  # >12 chars: full body is sent
+    tok.write_text(f"  {body}  \n", encoding="utf-8")
+    monkeypatch.setenv("HUB_TOKEN_FILE", str(tok))
+    assert bearer_header() == {"Authorization": f"{_SCHEME} {body}"}
+    # changed file content is picked up on the NEXT call (no caching)
+    body2 = "thk_" + "b" * 8 + "_rotated"
+    tok.write_text(f"{body2}\n", encoding="utf-8")
+    assert bearer_header() == {"Authorization": f"{_SCHEME} {body2}"}
+
+
+def test_bearer_header_unset_env_is_empty(monkeypatch):
+    monkeypatch.delenv("HUB_TOKEN_FILE", raising=False)
+    assert bearer_header() == {}
+
+
+def test_bearer_header_missing_file_names_env_not_contents(monkeypatch, tmp_path):
+    missing = tmp_path / "nope" / "token"
+    monkeypatch.setenv("HUB_TOKEN_FILE", str(missing))
+    with pytest.raises(HubError) as ei:
+        bearer_header()
+    msg = str(ei.value)
+    assert "HUB_TOKEN_FILE" in msg
+    # names the variable; the file's CONTENTS could not be read, so they are
+    # trivially absent — the error must be short and carry no secret payload
+    assert len(msg) < 300
+
+
+def test_bearer_header_unreadable_file_names_env_not_contents(monkeypatch, tmp_path):
+    # unreadability without relying on file modes (root bypasses them): point
+    # HUB_TOKEN_FILE at a directory -> open() raises IsADirectoryError (OSError)
+    unreads = tmp_path / "a-directory"
+    unreads.mkdir()
+    monkeypatch.setenv("HUB_TOKEN_FILE", str(unreads))
+    with pytest.raises(HubError) as ei:
+        bearer_header()
+    assert "HUB_TOKEN_FILE" in str(ei.value)
+
+
+def test_bearer_header_empty_file_names_env(monkeypatch, tmp_path):
+    empty = tmp_path / "empty.token"
+    empty.write_text("   \n", encoding="utf-8")
+    monkeypatch.setenv("HUB_TOKEN_FILE", str(empty))
+    with pytest.raises(HubError) as ei:
+        bearer_header()
+    assert "HUB_TOKEN_FILE" in str(ei.value)
+
+
+def test_request_sends_bearer_header(capture_server, tmp_path, monkeypatch):
+    url, seen = capture_server
+    tok = tmp_path / "t.token"
+    tok.write_text("thk_abcdefgh_full\n", encoding="utf-8")
+    monkeypatch.setenv("HUB_TOKEN_FILE", str(tok))
+    HubClient(base_url=url)._request("GET", "/tickets")
+    assert seen["auth"] == _SCHEME + " " + "thk_abcdefgh_full"
+
+
+def test_request_no_header_when_env_unset(capture_server, monkeypatch):
+    url, seen = capture_server
+    monkeypatch.delenv("HUB_TOKEN_FILE", raising=False)
+    HubClient(base_url=url)._request("GET", "/tickets")
+    assert seen["auth"] is None
+
+
+def test_request_unreadable_token_file_fails_before_network(monkeypatch, tmp_path):
+    monkeypatch.setenv("HUB_TOKEN_FILE", str(tmp_path / "missing"))
+    client = HubClient(base_url="http://127.0.0.1:1", timeout=1.0)
+    with pytest.raises(HubError) as ei:
+        client.board()  # fails at header build, never reaches the transport
+    assert ei.value.code == "token_unavailable"
+    assert "HUB_TOKEN_FILE" in ei.value.message

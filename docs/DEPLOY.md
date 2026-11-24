@@ -150,3 +150,65 @@ Pull on the hub branch, restart the API server, reload the launchd service
 if `outbound.py` changed. The schema migrates in place; the legacy flat-ledger
 migration was a one-time import applied before release, and its script is no
 longer shipped.
+
+## Access administration
+
+`scripts/hub_admin.py` manages actors, tokens, grants and labels directly on
+the database named by `TICKET_HUB_DB` (required; the CLI exits 2 if unset).
+Every mutating command needs `--by <owner-id>` naming an owner actor
+(`actor add ... --owner` bootstraps the **first** owner with any `--by` value
+while none exists yet). All mutations are recorded as internal events on an
+`access-ledger` ticket. Tokens are written to a fresh 0600 file (`--out`,
+never overwritten) and never printed; `token list` shows ids and prefixes only.
+
+```bash
+export TICKET_HUB_DB=~/.ticket-hub/hub.db
+
+# bootstrap the first owner (only possible while no owner exists)
+python scripts/hub_admin.py actor add <owner-id> --name "Owner" \
+    --kind human --owner --by bootstrap
+
+# actors
+python scripts/hub_admin.py actor add <agent-id> --name "Agent" --by <owner-id>
+python scripts/hub_admin.py actor add <ext-id> --name "Partner bot" \
+    --realm external --sponsor <owner-id> --expires 30d --by <owner-id>
+python scripts/hub_admin.py actor suspend <agent-id> --by <owner-id> --reason "offboard"
+python scripts/hub_admin.py actor activate <agent-id> --by <owner-id>
+# adopt one pre-access-control actor row (must already exist in the DB;
+# --kind/--family optional, never touches realm/clearance/sponsor/expiry;
+# --owner follows the same bootstrap rule as `actor add --owner`)
+python scripts/hub_admin.py actor adopt <legacy-id> --kind human --by <owner-id>
+# activate every actor that has no status row yet (cut-over sweep; prints
+# count + ids, idempotent, leaves suspended/revoked actors untouched)
+python scripts/hub_admin.py actor adopt-legacy --by <owner-id>
+python scripts/hub_admin.py actor list
+
+# tokens (token written to /path/to/token, mode 0600; prints id + prefix only)
+python scripts/hub_admin.py token issue <agent-id> --out /path/to/token \
+    --expires 30d --by <owner-id>
+python scripts/hub_admin.py token revoke <credential-id> --by <owner-id> --reason "rotate"
+python scripts/hub_admin.py token list
+
+# read grants (external actors: ticket / subtree / wiki_page scopes)
+python scripts/hub_admin.py grant add <ext-id> --scope-type subtree \
+    --scope <ticket-id> --expires 90d --by <owner-id> --reason "partner access"
+python scripts/hub_admin.py grant revoke <grant-id> --by <owner-id>
+python scripts/hub_admin.py grant list --actor <ext-id>
+
+# labels (publishing below 'internal' is owner-only)
+python scripts/hub_admin.py label ticket <ticket-id> external --by <owner-id> --reason "publish"
+python scripts/hub_admin.py label wiki <slug> external --by <owner-id>
+```
+
+Durations accept `30d`, `12h`, or an ISO-8601 UTC timestamp; they are stored
+as ISO UTC. Exit codes: 0 ok, 2 usage (including unset `TICKET_HUB_DB`),
+3 refused/validation, 4 not found.
+
+Clients (`hub_client.HubClient`, the outbound daemon) send the bearer token
+**at call time** from the file named by `HUB_TOKEN_FILE`; with the variable
+unset they send no header, and an unreadable/empty file fails with an error
+naming `HUB_TOKEN_FILE` (never its contents):
+
+```bash
+export HUB_TOKEN_FILE=/path/to/token   # mode 0600, from `token issue --out`
+```

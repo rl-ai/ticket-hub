@@ -12,6 +12,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 sys.path.insert(0, _HERE)
 
+# ACCESS-P1-CONTRACT §0/§3: the legacy suite runs unauthenticated. Only the
+# literal "off" disables auth in create_app(); production never sets this.
+os.environ.setdefault("TICKET_HUB_AUTH", "off")
+
 import pytest
 
 
@@ -51,3 +55,15 @@ def hub_base_url(tmp_path_factory):
     server.should_exit = True
     thread.join(timeout=10)
     assert not thread.is_alive()
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "live: needs a live deployment (HUB_LIVE=1)")
+
+
+@pytest.fixture(autouse=True)
+def _write_tokens_wildcard(monkeypatch):
+    """Default the suite to write-token wildcard ("*" = any valid bearer may
+    mutate) so legacy auth tests keep passing; write-scoping tests override
+    with concrete token lists (see test_write_tokens.py)."""
+    monkeypatch.setenv("TICKET_HUB_WRITE_TOKENS", "*")

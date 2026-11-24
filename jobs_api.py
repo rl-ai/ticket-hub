@@ -7,6 +7,16 @@ file as the hub, ``TICKET_HUB_DB``) is created lazily and cached on
 
 Errors use the existing JSON envelope:
 ``HTTPException(status_code, detail={"code": ..., "message": ...})``.
+
+Access P1 (lane W3): every /jobs* route here is registered on the app *before*
+``api.create_app`` calls ``check_policies(app)``, so each ``(METHOD, path)``
+below has an entry in ``ticket_hub.policy.POLICIES`` (mutations are
+``internal_write``, reads ``internal``). The auth middleware in api.py wraps
+these handlers, so the full pipeline (token -> policy -> external filtering ->
+access_log) applies unchanged. The bodies here carry no ``actor``/``owner``
+identity fields (the jobs store records run metadata only), so nothing else
+is needed for identity rules; ``digest_publish``'s event actor stays the
+fixed system identity, matching its pre-P1 behaviour.
 """
 from __future__ import annotations
 
@@ -106,13 +116,16 @@ def register_jobs_routes(app: FastAPI, get_store: Callable[[], Any]) -> None:
                 status_code=404,
                 detail={"code": "not_found", "message": f"Ticket {tid} not found"})
         d = jobs().digest(resolve(), since=_since(since_h))
-        get_store().append_event(
+        event = get_store().append_event(
             tid, "checkpoint",
             actor={"name": "jobs-digest", "family": "system", "kind": "agent"},
             payload={"type": "jobs_digest", "coverage": d["coverage"],
                      "totals": d["totals"], "problems": d["problems"][:20],
                      "markdown": digest_markdown(d)})
-        return {"published": True, "ticket_id": tid}
+        if isinstance(event, dict):
+            return {"published": True, "ticket_id": tid}
+        return {"published": True, "ticket_id": tid,
+                "event_id": getattr(event, "id", None)}
 
     @app.patch("/jobs/runs/{run_id}")
     def end_run(run_id: str, body: dict = Body(default={})):

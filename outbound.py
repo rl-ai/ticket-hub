@@ -38,6 +38,12 @@ import os
 import time
 import urllib.request
 
+# Shared bearer-token header reader (ACCESS-P1-CONTRACT §4): reads the file
+# named by HUB_TOKEN_FILE at call time. Import is side-effect free and
+# stdlib-only. The polish model call keeps its own key
+# (TICKET_HUB_POLISH_KEY_FILE) and must NOT use this.
+from hub_client import bearer_header
+
 from ticket_hub.adapters import (
     DEFAULT_CONFIG_PATH,
     DiscordAdapter,
@@ -79,13 +85,15 @@ class HubClient:
 
     def __init__(self, base_url: str = DEFAULT_HUB_URL, http_get=None):
         self.base_url = base_url.rstrip("/")
-        self._http_get = http_get  # injectable callable(url) -> parsed JSON
+        self._http_get = http_get  # injectable callable(url, headers) -> parsed JSON
 
     def _get(self, path: str):
         url = f"{self.base_url}{path}"
+        headers = bearer_header()  # read at call time (HUB_TOKEN_FILE)
         if self._http_get is not None:
-            return self._http_get(url)
-        with urllib.request.urlopen(url, timeout=15) as resp:
+            return self._http_get(url, headers)
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     def get_board(self) -> dict:

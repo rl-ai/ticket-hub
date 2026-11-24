@@ -76,12 +76,16 @@ class FakeStore:
 
     def get(self, ticket_id: str) -> dict | None:
         ticket = self.tickets.get(ticket_id)
-        return dict(ticket) if ticket else None
+        if ticket is None or ticket.get("deleted_at"):
+            return None
+        return dict(ticket)
 
     def list(self, *, status: str | None = None, family: str | None = None,
              tag: str | None = None, q: str | None = None) -> list[dict]:
         out = []
         for t in self.tickets.values():
+            if t.get("deleted_at"):
+                continue
             if status and t["status"] != status:
                 continue
             if family and family not in t["families"]:
@@ -113,6 +117,21 @@ class FakeStore:
             self.append_event(ticket_id, kind="updated", actor=actor,
                               payload={"fields": sorted(changed)})
         return dict(ticket)
+
+    def delete_ticket(self, ticket_id: str, *, actor: dict,
+                      via: str | None = None) -> dict:
+        """S4: tombstone-delete (mirrors Store.delete_ticket)."""
+        self._require(ticket_id)
+        ts = _now()
+        ticket = self.tickets[ticket_id]
+        ticket["deleted_at"] = ts
+        self.edges = [e for e in self.edges
+                      if e.get("src") != ticket_id and e.get("dst") != ticket_id]
+        self.bindings = [b for b in self.bindings
+                         if b.get("ticket_id") != ticket_id]
+        self.append_event(ticket_id, kind="ticket_deleted", actor=actor,
+                          payload={"deleted_at": ts})
+        return {"id": ticket_id, "deleted": True, "deleted_at": ts}
 
     def append_event(self, ticket_id: str, *, kind: str, actor: dict,
                      payload: dict | None = None) -> dict:

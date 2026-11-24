@@ -57,7 +57,8 @@ def test_create_child_via_parent_field(client):
 
 def test_list_filters(client):
     a = _create(client, "Alpha thing", tags=["ui"],
-                owner={"name": "hermes-1", "family": "hermes"})
+                owner={"name": "hermes-1", "family": "hermes",
+                       "kind": "agent"})
     b = _create(client, "Beta thing")
     client.patch(f"/tickets/{a['id']}", json={"status": "open"})
     assert {t["id"] for t in client.get("/tickets?status=Open").json()} == {a["id"]}
